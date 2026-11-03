@@ -96,7 +96,7 @@ def _read(path: Path) -> dict:
     if not path.exists():
         return {}
     try:
-        settings = json.loads(path.read_text() or "{}")
+        settings = json.loads(path.read_text(encoding="utf-8") or "{}")
     except ValueError as error:
         raise ValueError(f"{path} isn't valid JSON, so it was left as it is: {error}") from None
     if not isinstance(settings, dict):
@@ -120,7 +120,7 @@ def _write(path: Path, settings: dict) -> None:
 
 
 def _skill(root: Path, name: str) -> str:
-    text = (root / "skills" / name / "SKILL.md").read_text()
+    text = (root / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
     if not text.startswith("---\n"):
         raise ValueError(f"skills/{name}/SKILL.md has no front matter")
     text = text.replace("${CLAUDE_PLUGIN_ROOT}", str(root))
@@ -156,8 +156,8 @@ def install(root: Optional[Path] = None, jev: bool = False, settings_path: Optio
     for name, text in skills.items():
         folder = skills_dir / f"focused-{name}"
         folder.mkdir(parents=True, exist_ok=True)
-        (folder / "SKILL.md").write_text(text)
-        (folder / SKILL_MARK).write_text(str(root) + "\n")
+        (folder / "SKILL.md").write_text(text, encoding="utf-8")
+        (folder / SKILL_MARK).write_text(str(root) + "\n", encoding="utf-8")
     return [f"hooks in {settings_path}: Stop{' with Jev' if jev else ''}, SessionEnd, "
             "SessionStart (clear|compact), UserPromptSubmit",
             f"commands in {skills_dir}: " + ", ".join(f"/focused-{name}" for name in SKILLS),

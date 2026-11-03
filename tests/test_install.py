@@ -60,6 +60,15 @@ class InstallTest(unittest.TestCase):
             self.assertIn(f'python3 "{ROOT}/scripts/focused.py" --in-session', text)
             self.assertNotIn("CLAUDE_PLUGIN_ROOT", text)
 
+    def test_non_ascii_settings_survive_whatever_the_locale(self):
+        self.settings.write_text('{"companyAnnouncements": ["Grüße — 日本"]}', encoding="utf-8")
+        done = subprocess.run([sys.executable, str(ROOT / "scripts" / "focused.py"), "install"], capture_output=True,
+                              text=True, env=dict(os.environ, CLAUDE_CONFIG_DIR=str(self.settings.parent),
+                                                  LC_ALL="en_US.ISO-8859-1", LANG="en_US.ISO-8859-1",
+                                                  PYTHONUTF8="0", PYTHONCOERCECLOCALE="0"))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["companyAnnouncements"], ["Grüße — 日本"])
+
     def test_running_again_replaces_rather_than_adds(self):
         self.run_install()
         self.run_install(jev=True)
