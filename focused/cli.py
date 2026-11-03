@@ -1,15 +1,20 @@
 """focused: index Claude Code turns, list each question with its answer, search them.
 
-    focused hook stop                 # as a Stop hook: reads the hook's JSON on stdin
+    focused hook stop|session-end     # as a hook: reads the hook's JSON on stdin
     focused index <transcript.jsonl>  # index one transcript
     focused index --all               # index every transcript under ~/.claude/projects
     focused answers [-n N] [--session ID] [--events] [--full]
     focused find <words>
+
+From a skill, pass --in-session <id>: focused reindexes that session's transcript, uses
+its project's index, and reports problems on stdout with exit code 0, because a failing
+command aborts a skill.
 """
 
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import sqlite3
@@ -21,6 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import store
+from .transcript import LISTED
 
 
 def preview(text, limit: int, first_line: bool = False) -> str:
@@ -41,14 +47,14 @@ def _list(value: str) -> list:
 
 def format_turns(rows, full: bool = False, events: bool = False, number_from: int = 1) -> str:
     """Each listed turn with its answer; synthetic turns folded under it."""
-    listed = [r for r in rows if r["origin"] in ("human", "unknown")]
+    listed = [r for r in rows if r["origin"] in LISTED]
     children: dict = {}
     for row in rows:
         if row["parent_key"]:
             children.setdefault(row["parent_key"], []).append(row)
     out = []
     for i, row in enumerate(listed, number_from):
-        mark = "" if row["origin"] == "human" else " · origin unknown"
+        mark = {"human": "", "sdk": " · via SDK"}.get(row["origin"], " · origin unknown")
         out.append(f"## {i}. {(row['started_at'] or '')[:16].replace('T', ' ')}{mark}")
         out.append("Q: " + (row["prompt"].strip() or "(no text)" if full else preview(row["prompt"], 200, first_line=True)))
         answer = row["answer"]
@@ -75,12 +81,43 @@ def format_turns(rows, full: bool = False, events: bool = False, number_from: in
     return "\n".join(out)
 
 
+def projects_dir() -> Path:
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude")).expanduser() / "projects"
+
+
 def _db(args, transcript=None) -> Path:
     if args.db:
         return Path(args.db)
     if transcript:
         return store.db_for_transcript(transcript)
-    return store.db_for_cwd(os.getcwd())
+    if args.in_session:
+        return _db_for_session(args.in_session)
+    return store.db_for_cwd(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+
+
+def _db_for_session(session: str) -> Path:
+    """The index of the project this session belongs to, refreshed from its transcript."""
+    for transcript in projects_dir().glob(f"*/{glob.escape(session)}.jsonl"):
+        db = store.db_for_transcript(transcript)
+        with closing(store.connect(db)) as conn:
+            store.index_transcript(conn, transcript)
+        return db
+    for db in sorted(store.home().glob("*.sqlite")):  # the transcript is gone, the index may not be
+        try:
+            with closing(sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)) as conn:
+                if conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session,)).fetchone():
+                    return db
+        except sqlite3.Error:
+            continue
+    return store.db_for_cwd(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+
+
+def _fail(args, message: str, code: int) -> int:
+    if args.in_session:
+        print(message)
+        return 0
+    print(message, file=sys.stderr)
+    return code
 
 
 def cmd_hook_stop(args) -> int:
@@ -106,7 +143,7 @@ def cmd_hook_stop(args) -> int:
 def cmd_index(args) -> int:
     paths = list(args.paths)
     if args.all:
-        paths += sorted(str(p) for p in (Path.home() / ".claude" / "projects").glob("*/*.jsonl"))
+        paths += sorted(str(p) for p in projects_dir().glob("*/*.jsonl"))
     if not paths:
         print("Nothing to index: name a transcript, or pass --all.", file=sys.stderr)
         return 2
@@ -130,12 +167,13 @@ def cmd_answers(args) -> int:
 
 
 def _answers(args, conn) -> int:
-    session = args.session or store.latest_session(conn)
+    session = args.session or args.in_session or store.latest_session(conn)
     if not session:
-        print("No indexed sessions for this project. Run `focused index --all`, or enable the Stop hook.", file=sys.stderr)
-        return 1
+        return _fail(args, "No indexed sessions for this project. Run `focused index --all`, or enable the Stop hook.", 1)
     rows = store.session_turns(conn, session)
-    listed = [r for r in rows if r["origin"] in ("human", "unknown")]
+    if not rows:
+        return _fail(args, f"No indexed sessions match {session}. Run `focused index --all`, or enable the Stop hook.", 1)
+    listed = [r for r in rows if r["origin"] in LISTED]
     keep = {r["turn_key"] for r in listed[-args.n:]} if args.n else None
     if keep is not None:
         rows = [r for r in rows if r["turn_key"] in keep or r["parent_key"] in keep]
@@ -146,11 +184,13 @@ def _answers(args, conn) -> int:
 
 
 def cmd_find(args) -> int:
+    if not args.words:
+        return _fail(args, "Name the words to search for, as in: find webhook retry", 2)
     with closing(store.connect(_db(args))) as conn:
         rows = store.search(conn, args.words, limit=args.limit)
     if not rows:
         print("No match.")
-        return 1
+        return 0 if args.in_session else 1
     for row in rows:
         when = (row["started_at"] or "")[:16].replace("T", " ")
         print(f"- {when} · session {row['session_id'][:8]} · {row['origin']}: {row['hit']}")
@@ -161,10 +201,14 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="focused", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--db", help="the index database (default: one per project under ~/.claude/focused)")
+    parser.add_argument("--in-session", metavar="ID",
+                        help="use the index of this session's project, refreshed first (for skills)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     hook = sub.add_parser("hook", help="run as a Claude Code hook")
-    hook.add_argument("event", choices=["stop"])
+    # Stop runs async after each turn; SessionEnd runs in the foreground on exit or /clear,
+    # so a turn whose async run was cut off by the exit is still indexed.
+    hook.add_argument("event", choices=["stop", "session-end"])
     hook.set_defaults(run=cmd_hook_stop)
 
     index = sub.add_parser("index", help="index transcripts")
@@ -180,7 +224,7 @@ def main(argv=None) -> int:
     answers.set_defaults(run=cmd_answers)
 
     find = sub.add_parser("find", help="search prompts and answers")
-    find.add_argument("words", nargs="+")
+    find.add_argument("words", nargs="*")
     find.add_argument("--limit", type=int, default=10)
     find.set_defaults(run=cmd_find)
 
