@@ -193,11 +193,14 @@ def _named(args, db: Path, named: Optional[str]) -> Optional[str]:
     key, words = named.casefold(), named.casefold().split()
 
     def title(row) -> str:
-        return (row.get("title") or "").casefold()
+        # A title names a session of this project only; other projects' sessions, listed
+        # for an id's start, are named by their id.
+        here = row.get("project", db.stem) == db.stem
+        return (row.get("title") or "").casefold() if here else ""
 
     for matches in (lambda row: row["session_id"] == named,
                     lambda row: len(named) >= SHORTEST_PREFIX and row["session_id"].startswith(named),
-                    lambda row: title(row) == key,
+                    lambda row: bool(title(row)) and title(row) == key,
                     lambda row: bool(words) and all(word in title(row) for word in words)):
         found = [row for row in rows if matches(row)]
         if len(found) == 1:

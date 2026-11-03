@@ -435,6 +435,17 @@ class HostedCliTest(RemoteFixture):
         self.assertIn("1. s1 | Hooks and answers |", out)
         self.assertNotIn("pwned", out)
 
+    def test_a_title_names_only_this_projects_sessions_and_an_id_any(self):
+        self.push_from_elsewhere()
+        os.environ["CLAUDE_PROJECT_DIR"] = "/work/repo"  # this project: -work-repo
+        elsewhere = "e1e1e1e1-other"
+        self.worker.sessions[elsewhere] = dict(self.worker.sessions.pop("s1"), project="-other",
+                                               title="Hooks elsewhere")
+        code, out = self.run_cli("answers", "--session", "hooks")
+        self.assertIn("No indexed sessions match hooks", out)  # another project's title names nothing here
+        code, out = self.run_cli("answers", "--session", elsewhere[:8])
+        self.assertIn("# “Hooks elsewhere” (e1e1e1e1)", out)  # its id still names it
+
     def test_a_session_only_the_hosted_index_holds_is_named_by_its_title(self):
         self.push_from_elsewhere()
         os.environ["CLAUDE_PROJECT_DIR"] = "/work/repo"  # titles are looked up in this project: -work-repo
