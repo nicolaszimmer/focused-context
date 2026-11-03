@@ -1,7 +1,7 @@
 {
   "name": "focused",
   "displayName": "Focused context",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Finds your answers in a long session. Indexes each message, split into its parts, and everything Claude wrote in reply, wake-ups included. With Jev switched on, /focused:answers shows each part with the paragraphs that answer it; /focused:find searches it all. After /clear and compaction, a summary of where the session left off is loaded. After an hour without a reply, the first message you type is stopped once, so you can /clear first. The index stays on this machine, in ~/.claude/focused, unless you set up the hosted index on your own Cloudflare account (focused-context-worker), which every session can read back.",
   "author": { "name": "nicolaszimmer" },
   "repository": "https://github.com/nicolaszimmer/focused-context",

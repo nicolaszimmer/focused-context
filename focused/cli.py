@@ -6,7 +6,8 @@
     focused answers [-n N] [--session ID] [--events] [--full]
     focused find <words>
     focused context [--session ID] [--full]   # the summary loaded after /clear and compaction
-    focused install [--jev] [--uninstall]     # hooks and commands for a cloud environment
+    focused install [--jev] [--follow BRANCH] [--uninstall]  # hooks and commands for a cloud environment
+    focused update --follow BRANCH [--jev]    # bring that install to where the branch is now
 
 With FOCUSED_JEV=1 and an OpenRouter key, the Stop hook also asks Jev what each part
 of a message does and which paragraphs answer it (focused/jev.py); `answers` then lists
@@ -40,6 +41,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import idle, install, jev, remote, store, summary
+from . import update as updater
 from .transcript import LISTED, is_own_command
 
 
@@ -630,12 +632,30 @@ def cmd_install(args) -> int:
         if args.uninstall:
             done = install.uninstall()
         else:
-            done = install.install(Path(args.root) if args.root else None, jev=args.jev)
+            done = install.install(Path(args.root) if args.root else None, jev=args.jev, follow=args.follow)
     except (OSError, ValueError) as error:
         print(f"focused: {error}", file=sys.stderr)
         return 1
     for line in done or ["nothing to remove"]:
         print(f"focused: {line}")
+    return 0
+
+
+def cmd_update(args) -> int:
+    """Bring a cloud install to where its branch is now (focused/update.py). As the
+    SessionStart hook (--hook) it prints nothing, since that would join Claude's context,
+    and never fails: what goes wrong is logged, and the session keeps the focused it has."""
+    root = Path(args.root) if args.root else install.package_root()
+    try:
+        message = updater.update(root, args.follow, args.jev)
+    except Exception as error:  # noqa: BLE001 - as a hook, never fail the session
+        if args.hook:
+            _log("update", str(error))
+            return 0
+        print(f"focused: {error}", file=sys.stderr)
+        return 1
+    if not args.hook:
+        print(message)
     return 0
 
 
@@ -737,7 +757,16 @@ def main(argv=None) -> int:
     setup.add_argument("--root", help="the focused-context checkout the hooks run (default: this one)")
     setup.add_argument("--jev", action="store_true", help="ask Jev in the Stop hook (needs an OpenRouter key)")
     setup.add_argument("--uninstall", action="store_true", help="remove what install put in place")
+    setup.add_argument("--follow", metavar="BRANCH",
+                       help="also keep the install at this branch of focused-context, checked as each session starts")
     setup.set_defaults(run=cmd_install)
+
+    keep = sub.add_parser("update", help="bring a cloud install to where its branch is now")
+    keep.add_argument("--follow", metavar="BRANCH", required=True, help="the branch of focused-context to follow")
+    keep.add_argument("--jev", action="store_true", help="install with Jev, as before")
+    keep.add_argument("--root", help="the focused-context checkout installed now (default: this one)")
+    keep.add_argument("--hook", action="store_true", help="run as the SessionStart hook: print nothing, log failures")
+    keep.set_defaults(run=cmd_update)
 
     find = sub.add_parser("find", help="search prompts and answers")
     find.add_argument("words", nargs="*")

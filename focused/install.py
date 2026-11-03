@@ -17,6 +17,9 @@ which calls `install()`:
   the same name, so a repository's own copies are shadowed, not doubled.
 - **`FOCUSED_INSTALL=environment`** in the settings' `env`, so a repository's own focused
   hooks (rapid-review-bot's wrapper) stand down instead of running a second time.
+- With `follow`, a branch of focused-context, a **SessionStart hook** at startup and resume
+  that keeps the install at that branch (focused/update.py): the setup script runs once a
+  week or so, and this runs in every session.
 
 Running it again replaces what it installed, and `uninstall()` removes it. Other hooks,
 skills and settings are left as they are: focused's hooks are recognised by MARK.
@@ -48,7 +51,7 @@ def package_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def _hooks(root: Path, jev: bool) -> dict:
+def _hooks(root: Path, jev: bool, follow: Optional[str] = None) -> dict:
     script = f'python3 "{root}/scripts/focused.py" hook'
 
     def command(event: str, timeout: Optional[int] = None, prefix: str = "", run_async: bool = False) -> dict:
@@ -59,12 +62,19 @@ def _hooks(root: Path, jev: bool) -> dict:
             hook["async"] = True
         return hook
 
-    return {
+    hooks = {
         "Stop": [{"hooks": [command("stop", prefix="FOCUSED_JEV=1 " if jev else "", run_async=True)]}],
         "SessionEnd": [{"hooks": [command("session-end", timeout=15)]}],
         "SessionStart": [{"matcher": "clear|compact", "hooks": [command("session-start", timeout=30)]}],
         "UserPromptSubmit": [{"hooks": [command("prompt", timeout=15)]}],
     }
+    if follow:
+        # In the background, so a slow network never holds up the start of a session.
+        update = (f'python3 "{root}/scripts/focused.py" update --hook --follow {follow}'
+                  f'{" --jev" if jev else ""}  {MARK}')
+        hooks["SessionStart"].append({"matcher": "startup|resume",
+                                      "hooks": [{"type": "command", "command": update, "async": True}]})
+    return hooks
 
 
 def _ours(hook) -> bool:
@@ -128,11 +138,15 @@ def _skill(root: Path, name: str) -> str:
 
 
 def install(root: Optional[Path] = None, jev: bool = False, settings_path: Optional[Path] = None,
-            skills_dir: Optional[Path] = None) -> list:
-    """Install the hooks, skills and mark; returns what was done, line by line."""
+            skills_dir: Optional[Path] = None, follow: Optional[str] = None) -> list:
+    """Install the hooks, skills and mark, and with `follow` the hook that keeps them at that
+    branch; returns what was done, line by line."""
+    from .update import REF_NAME
     root = Path(root or package_root()).resolve()
     if not SAFE_PATH.fullmatch(str(root)):
         raise ValueError(f"{root} holds characters the shell would read, so no hooks point at it")
+    if follow is not None and not REF_NAME.fullmatch(follow):
+        raise ValueError(f"{follow!r} isn't a plain branch name, so nothing was installed")
     if not (root / "scripts" / "focused.py").exists():
         raise ValueError(f"{root} isn't a focused-context checkout this can point hooks at")
     settings_path = settings_path or config_dir() / "settings.json"
@@ -147,7 +161,7 @@ def install(root: Optional[Path] = None, jev: bool = False, settings_path: Optio
     skills = {name: _skill(root, name) for name in SKILLS}
 
     hooks = _without_ours(settings.get("hooks") or {})
-    for event, groups in _hooks(root, jev).items():
+    for event, groups in _hooks(root, jev, follow).items():
         hooks[event] = hooks.get(event, []) + groups
     settings["hooks"] = hooks
     settings["env"] = dict(settings.get("env") or {}, **{ENV_MARK[0]: ENV_MARK[1]})
@@ -159,7 +173,8 @@ def install(root: Optional[Path] = None, jev: bool = False, settings_path: Optio
         (folder / "SKILL.md").write_text(text, encoding="utf-8")
         (folder / SKILL_MARK).write_text(str(root) + "\n", encoding="utf-8")
     return [f"hooks in {settings_path}: Stop{' with Jev' if jev else ''}, SessionEnd, "
-            "SessionStart (clear|compact), UserPromptSubmit",
+            "SessionStart (clear|compact), UserPromptSubmit"
+            + (f", and SessionStart (startup|resume) following {follow}" if follow else ""),
             f"commands in {skills_dir}: " + ", ".join(f"/focused-{name}" for name in SKILLS),
             f"from {root}"]
 

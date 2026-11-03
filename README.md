@@ -321,12 +321,13 @@ In a session, open the cloud environment menu in the title bar, then **Edit**, t
 **Setup script**, and add:
 
 ```sh
-REF=<a commit of focused-context's main>
+U=https://github.com/nicolaszimmer/focused-context
+REF=$(git ls-remote "$U" refs/heads/main | cut -f1); [ -n "$REF" ] || exit 1
 D="$HOME/.cache/focused-context/$REF"
 [ -f "$D/scripts/install-cloud.sh" ] || { git init -q "$D" &&
-  git -C "$D" fetch -q --depth 1 https://github.com/nicolaszimmer/focused-context "$REF" &&
+  git -C "$D" fetch -q --depth 1 "$U" "$REF" &&
   git -C "$D" -c advice.detachedHead=false checkout -q FETCH_HEAD; }
-sh "$D/scripts/install-cloud.sh" --jev
+sh "$D/scripts/install-cloud.sh" --jev --follow main
 ```
 
 `install-cloud.sh` (`focused install`):
@@ -342,11 +343,30 @@ sh "$D/scripts/install-cloud.sh" --jev
 - `--jev` asks Jev in the `Stop` hook. The environment then needs
   `FOCUSED_OPENROUTER_API_KEY` or `OPENROUTER_API_KEY` among its variables, and access to
   openrouter.ai. The setup script itself can't read the variables; the hooks can.
+- `--follow main` keeps the install at focused-context's main; see "Updates" below.
 - `--uninstall` removes what it installed, and nothing else.
 
 Every session of the environment is indexed. Keep a repository out by using another
-environment for it. To take a newer focused, change `REF` in the setup script. A cached
-environment skips the setup script and keeps what it installed.
+environment for it.
+
+**Updates.** A cloud environment runs its setup script once, keeps what it wrote, and
+starts later sessions from that for about seven days. It runs the script again only when
+the script, or the environment's allowed network hosts, change. So the setup script alone
+would keep the focused it fetched for up to a week. With `--follow main`, focused also
+installs a `SessionStart` hook that runs in the background as each session starts or
+resumes (`focused update`, `focused/update.py`):
+
+- it asks GitHub where `main` is (`git ls-remote`, well under a second);
+- if `main` has moved, it fetches that commit into `~/.cache/focused-context/<commit>` and
+  runs that version's own installer, which takes over the hooks and commands;
+- Claude Code usually picks up changed hooks while a session runs; otherwise the new
+  version takes over from the next session;
+- it fails open: without network, git or a working commit, the session keeps the focused
+  it has, and the reason goes to `~/.claude/focused/errors.log`.
+
+So a merge to focused-context's main reaches every new cloud session of the environment by
+itself. To stay on one version instead, leave out `--follow main` and set `REF` to a
+commit; a changed setup script rebuilds the cached environment.
 
 ### One repository's own setup
 
@@ -393,6 +413,8 @@ Made on 2026-11-03 by the maintainer:
   "run /clear or send again"; at 59 minutes, to err on the side of caution.
 - Cloud sessions get focused from the environment's setup script, for any number of
   repositories (`install-cloud.sh`).
+- Cloud sessions follow focused-context's main (`--follow main`): a merge to main is a
+  release, which new sessions pick up by themselves.
 - The index and a ledger of decisions, to-dos and findings will be hosted on the
   maintainer's Cloudflare account, in a Worker in its own repository. New Jev questions
   for it ship switched off and are judged by their output.
