@@ -170,11 +170,17 @@ def index_transcript(conn: sqlite3.Connection, path, stop_message: Optional[str]
             conn.executemany("DELETE FROM turns WHERE session_id = ? AND turn_key = ?",
                              [(session_id, key) for key in stored if key not in kept])
         if stop_message and parsed.turns:
-            # The transcript may not hold the final message yet when Stop fires.
+            # The transcript may not hold the final message yet when Stop fires, so the
+            # message is the latest turn's answer. But the hook runs async and can run late,
+            # after the next turn has begun: then a turn already holds the message, and it
+            # is that turn's.
+            wanted = stop_message.strip()
+            target = next((t for t in reversed(parsed.turns)
+                           if any(r.strip() == wanted for r in t.replies)), parsed.turns[-1])
             conn.execute(
                 "UPDATE turns SET answer = ?, answer_source = 'stop-hook' "
                 "WHERE session_id = ? AND turn_key = ? AND answer IS NOT ?",
-                (stop_message, session_id, parsed.turns[-1].key, stop_message))
+                (stop_message, session_id, target.key, stop_message))
         stamps = [t.started_at for t in parsed.turns if t.started_at]
         conn.execute(
             "INSERT INTO sessions (session_id, transcript_path, first_at, last_at) VALUES (?, ?, ?, ?) "

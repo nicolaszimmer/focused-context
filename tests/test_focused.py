@@ -159,6 +159,12 @@ class StoreTest(Fixture):
         row = conn.execute("SELECT answer, answer_source FROM turns WHERE turn_key = 'old'").fetchone()
         self.assertEqual(tuple(row), ("The final words.", "stop-hook"))
 
+    def test_a_late_stop_hook_answers_its_own_turn_not_the_latest(self):
+        conn = self.index(stop_message="Hooks only add context.")  # u1's answer; 'old' has begun since
+        rows = dict(conn.execute("SELECT turn_key, answer FROM turns").fetchall())
+        self.assertEqual(rows["u1"], "Hooks only add context.")
+        self.assertIsNone(rows["old"])
+
     def test_reindexing_drops_turns_the_transcript_no_longer_splits_off(self):
         conn = self.index()
         conn.execute("INSERT INTO turns (session_id, turn_key, seq, origin, prompt) VALUES ('s1', 'q1', 9, 'human', 'also this')")
