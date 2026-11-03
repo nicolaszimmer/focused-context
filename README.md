@@ -253,17 +253,59 @@ From the settings, plugin and cloud-session docs (code.claude.com/docs, read
 | Surface | Does indexing run? | Does the index persist? |
 |---|---|---|
 | Terminal, VS Code and JetBrains extensions, desktop app (local) | Yes, with the plugin installed for your user | Yes, in `~/.claude/focused/` |
-| Cloud session with one repository | Not through the plugin: cloud sessions install neither the plugins in your user settings nor those a repository declares. Only hooks in that repository's committed `.claude/settings.json` run; see "Cloud sessions" below | No. The VM is reclaimed after inactivity. The conversation is restored on reopen, so the index can be rebuilt (not yet verified that the transcript file is restored at the same path) |
-| Cloud session with several repositories, or a thread in a project | No. Repository hooks are not read there | No. The command still works when run by hand |
+| Cloud session, any number of repositories | Yes, with focused installed by the environment's setup script; see "Cloud environments" below. Cloud sessions install neither the plugins in your user settings nor those a repository declares | No. The VM is reclaimed after inactivity. The conversation is restored on reopen, so the index can be rebuilt (not yet verified that the transcript file is restored at the same path) |
+| Cloud session with one repository, without the setup script | Only if that repository's committed `.claude/settings.json` runs focused; see "One repository's own setup" below | As above |
+| A thread in a project | No. Threads read neither repository hooks nor, as far as the docs say, the environment's | No. The command still works when run by hand |
 
-### Cloud sessions
+### Cloud environments
 
-rapid-review-bot carries the setup for its own single-repository cloud sessions:
+A cloud environment's setup script runs before Claude Code starts, in every session of
+that environment, and Claude Code reads hooks and skills from the container's own
+`~/.claude`. So one setup script installs focused for every session, whatever the
+number of repositories in it. Checked on 2026-11-03: hooks merged into
+`~/.claude/settings.json` by the setup script ran in a session with two repositories.
+
+In a session, open the cloud environment menu in the title bar, then **Edit**, then
+**Setup script**, and add:
+
+```sh
+REF=<a commit of focused-context's main>
+D="$HOME/.cache/focused-context/$REF"
+[ -f "$D/scripts/install-cloud.sh" ] || { git init -q "$D" &&
+  git -C "$D" fetch -q --depth 1 https://github.com/nicolaszimmer/focused-context "$REF" &&
+  git -C "$D" -c advice.detachedHead=false checkout -q FETCH_HEAD; }
+sh "$D/scripts/install-cloud.sh" --jev
+```
+
+`install-cloud.sh` (`focused install`):
+
+- merges the four hooks into `~/.claude/settings.json`: `Stop` (async), `SessionEnd`,
+  `SessionStart` after `/clear` and compaction, and `UserPromptSubmit`. Other hooks and
+  settings stay as they are, and running it again replaces what it installed.
+- writes `/focused-answers`, `/focused-find` and `/focused-context` as personal skills
+  in `~/.claude/skills`. A personal skill takes precedence over a repository's skill of
+  the same name, so a repository's own copies are shadowed, not doubled.
+- sets `FOCUSED_INSTALL=environment` in the settings' `env`, so a repository's own
+  focused hooks, such as rapid-review-bot's, stand down instead of running twice.
+- `--jev` asks Jev in the `Stop` hook. The environment then needs
+  `FOCUSED_OPENROUTER_API_KEY` or `OPENROUTER_API_KEY` among its variables, and access to
+  openrouter.ai. The setup script itself can't read the variables; the hooks can.
+- `--uninstall` removes what it installed, and nothing else.
+
+Every session of the environment is indexed. Keep a repository out by using another
+environment for it. To take a newer focused, change `REF` in the setup script. A cached
+environment skips the setup script and keeps what it installed.
+
+### One repository's own setup
+
+Without the setup script, a repository can carry focused for its own
+single-repository cloud sessions. rapid-review-bot does:
 
 - `.claude/hooks/focused.sh` fetches focused-context at a pinned commit, once per
   machine, into `~/.cache/focused-context/<commit>`, and runs it. Its hooks act
   only when `CLAUDE_CODE_REMOTE=true`, so on a machine with the plugin installed
-  they do nothing and the plugin indexes.
+  they do nothing and the plugin indexes. They also stand down when the environment
+  installed focused (`FOCUSED_INSTALL=environment`).
 - `.claude/settings.json` runs it as the `Stop`, `SessionEnd`, `SessionStart` and
   `UserPromptSubmit` hooks, `SessionStart` after `/clear` and compaction only.
 - `.claude/skills/focused-answers`, `focused-find` and `focused-context` are the
@@ -271,8 +313,7 @@ rapid-review-bot carries the setup for its own single-repository cloud sessions:
   because cloud sessions load a repository's skills but not plugins.
 
 A cloud session can fetch focused-context only while it is public: a private
-repository is readable only when it is attached to the session, and a session
-with several repositories reads no repository's hooks. Until then the hooks
+repository is readable only when it is attached to the session. Otherwise the hooks
 log the failure to `~/.claude/focused/errors.log` and do nothing. To take a
 newer focused, change the commit pinned in `focused.sh`.
 
@@ -298,14 +339,16 @@ Made on 2026-11-03 by the maintainer:
 - Development material lives in focused-context-lab.
 - After an hour without a reply, the first message typed is stopped once, with
   "run /clear or send again"; at 59 minutes, to err on the side of caution.
+- Cloud sessions get focused from the environment's setup script, for any number of
+  repositories (`install-cloud.sh`).
+- The index and a ledger of decisions, to-dos and findings will be hosted on the
+  maintainer's Cloudflare account, in a Worker in its own repository. New Jev questions
+  for it ship switched off and are judged by their output.
 
 Open:
 
 1. Whether 30 days, following `cleanupPeriodDays`, is the right retention.
-2. Whether to add a hosted index for cloud and mobile sessions, and for whom.
-3. Whether other repositories used in cloud sessions get rapid-review-bot's
-   setup.
-4. The smallest session the stop applies to: 100,000 tokens, Claude's suggestion,
-   not yet confirmed.
-5. The limit on the summary loaded after `/clear` and compaction: 9,500
+2. The smallest session the stop after an hour applies to: 100,000 tokens, Claude's
+   suggestion, not yet confirmed.
+3. The limit on the summary loaded after `/clear` and compaction: 9,500
    characters, set by Claude under Claude Code's 10,000.

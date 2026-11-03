@@ -6,6 +6,7 @@
     focused answers [-n N] [--session ID] [--events] [--full]
     focused find <words>
     focused context [--session ID] [--full]   # the summary loaded after /clear and compaction
+    focused install [--jev] [--uninstall]     # hooks and commands for a cloud environment
 
 With FOCUSED_JEV=1 and an OpenRouter key, the Stop hook also asks Jev what each part
 of a message does and which paragraphs answer it (focused/jev.py); `answers` then lists
@@ -33,7 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from . import idle, jev, store, summary
+from . import idle, install, jev, store, summary
 from .transcript import LISTED, is_own_command
 
 
@@ -442,6 +443,22 @@ def cmd_context(args) -> int:
     return 0
 
 
+def cmd_install(args) -> int:
+    """For a cloud environment's setup script (scripts/install-cloud.sh): install the hooks
+    and commands for every session of the environment, or remove them."""
+    try:
+        if args.uninstall:
+            done = install.uninstall()
+        else:
+            done = install.install(Path(args.root) if args.root else None, jev=args.jev)
+    except (OSError, ValueError) as error:
+        print(f"focused: {error}", file=sys.stderr)
+        return 1
+    for line in done or ["nothing to remove"]:
+        print(f"focused: {line}")
+    return 0
+
+
 def cmd_find(args) -> int:
     if not args.words:
         return _fail(args, "Name the words to search for, as in: find webhook retry", 2)
@@ -497,6 +514,12 @@ def main(argv=None) -> int:
     context.add_argument("--session", help="a session id (default: the latest in this project)")
     context.add_argument("--full", action="store_true", help="every message, not only what fits the hook's limit")
     context.set_defaults(run=cmd_context)
+
+    setup = sub.add_parser("install", help="install the hooks and commands for a cloud environment")
+    setup.add_argument("--root", help="the focused-context checkout the hooks run (default: this one)")
+    setup.add_argument("--jev", action="store_true", help="ask Jev in the Stop hook (needs an OpenRouter key)")
+    setup.add_argument("--uninstall", action="store_true", help="remove what install put in place")
+    setup.set_defaults(run=cmd_install)
 
     find = sub.add_parser("find", help="search prompts and answers")
     find.add_argument("words", nargs="*")
