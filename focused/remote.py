@@ -253,6 +253,21 @@ def sessions(project: Optional[str], limit: int = 20, title: Optional[str] = Non
                  "sessions")
 
 
+def recall(text: str, exclude: Optional[str] = None, project: Optional[str] = None, limit: int = 5,
+           timeout: float = 15.0) -> dict:
+    """The earlier message parts that bear on `text`, best first (POST /v1/recall): each with
+    its session's id and title, time, `similarity` (the cosine, when found by meaning), `via`
+    and up to two `answers`; and `vectors`, whether the Worker searched by meaning."""
+    body = {"text": text[:20_000], "exclude": exclude, "project": project, "limit": limit}
+    found = _object(_call("POST", "/v1/recall", _encoded(body), timeout=timeout), "recall results")
+    items = _rows(found.get("items"), "recalled parts")
+    for item in items:
+        if not (isinstance(item.get("session_id"), str) and isinstance(item.get("part"), str)
+                and isinstance(item.get("answers", []), list)):
+            raise RemoteError("the Worker sent a recalled part without its session or text")
+    return {"items": items, "vectors": bool(found.get("vectors"))}
+
+
 def search(words: list, project: Optional[str], limit: int = 10, timeout: float = 15.0) -> dict:
     """Messages and paragraphs matching every word, each with its `hit`."""
     query = {"q": " ".join(words), "limit": limit}

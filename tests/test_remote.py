@@ -36,6 +36,8 @@ class FakeWorker:
         self.fail: list = []  # statuses to answer the next requests with
         self.redirect = None  # a URL to send every request on to
         self.raw: list = []  # (body, declared length) to answer the next requests with, as they are
+        self.recall_items: list = []  # what POST /v1/recall answers
+        self.recalls: list = []  # the bodies it was sent
         worker = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -55,6 +57,9 @@ class FakeWorker:
 
             def do_PUT(self):
                 self.handle_any("PUT")
+
+            def do_POST(self):
+                self.handle_any("POST")
 
             def handle_any(self, method):
                 length = int(self.headers.get("content-length") or 0)
@@ -81,6 +86,9 @@ class FakeWorker:
                     return
                 url = urllib.parse.urlsplit(self.path)
                 query = dict(urllib.parse.parse_qsl(url.query))
+                if url.path == "/v1/recall" and method == "POST":
+                    worker.recalls.append(json.loads(body))
+                    return self.reply(200, {"items": worker.recall_items, "vectors": True})
                 if url.path.startswith("/v1/sessions/"):
                     session = urllib.parse.unquote(url.path.rsplit("/", 1)[1])
                     if method == "PUT":

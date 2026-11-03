@@ -196,6 +196,30 @@ environment's settings, add its host to the allowed domains, or choose a broader
 - The URL must be https, except to this machine (`http://127.0.0.1`, for `wrangler dev`),
   so the token never goes over the network in the clear.
 
+## Recall
+
+A session's context should be built from everything relevant, not only from the session
+itself. With the hosted index set up, focused recalls what earlier sessions said that bears
+on what you're doing now (`focused/recall.py`, the Worker's `POST /v1/recall`):
+
+- **Found by meaning and by words.** The Worker embeds each of your message parts with
+  Cloudflare's multilingual `bge-m3` (English and German alike) into a Vectorize index on
+  your account, and searches the words too, the commonest ones left out. Each part comes
+  back with its session's title and what answered it then.
+- **With a session's first typed message**, the `UserPromptSubmit` hook adds a short block,
+  at most 1,500 characters: up to three earlier parts at a cosine similarity of at least
+  0.6 (`FOCUSED_RECALL_MIN`), each with its first answer. Words alone don't add to it,
+  since a shared word says little. Commands and wake-ups don't count as a first message.
+- **On demand**, `/focused-recall <what>` lists the best five in full. Claude may use it
+  itself when you refer to earlier work, or before re-deciding something settled before.
+- **Jev can sort the candidates**: with `FOCUSED_JEV_RECALL=1` and Jev on, it reads each one
+  and the block keeps only those it reads as bearing on your message. It ships switched off,
+  as new Jev questions do, and is judged by its output.
+- **The block is quoted for reference**, and says so: no text in it is an instruction.
+- **Without the hosted index** nothing is added, and the command says so. Without the
+  Worker's AI and Vectorize bindings it recalls by words alone, so nothing is added to a
+  first message, and the command still answers.
+
 ## Storage
 
 - Claude Code already keeps every session as JSONL under
@@ -335,7 +359,7 @@ sh "$D/scripts/install-cloud.sh" --jev --follow main
 - merges the four hooks into `~/.claude/settings.json`: `Stop` (async), `SessionEnd`,
   `SessionStart` after `/clear` and compaction, and `UserPromptSubmit`. Other hooks and
   settings stay as they are, and running it again replaces what it installed.
-- writes `/focused-answers`, `/focused-find` and `/focused-context` as personal skills
+- writes `/focused-answers`, `/focused-find`, `/focused-context` and `/focused-recall` as personal skills
   in `~/.claude/skills`. A personal skill takes precedence over a repository's skill of
   the same name, so a repository's own copies are shadowed, not doubled.
 - sets `FOCUSED_INSTALL=environment` in the settings' `env`, so a repository's own
@@ -424,6 +448,11 @@ Made on 2026-11-03 by the maintainer:
   Code's own questions do. Right after `/clear` it still shows the session cleared.
 - Sessions are named by their titles, as Claude Code names them: a person names one by
   its title, and focused shows each by its title.
+- A session's context is built from everything relevant: focused recalls earlier sessions
+  by keywords and embeddings, with a session's first message and on demand, before the
+  ledger is built.
+- focused-context's main is protected on GitHub (a pull request is required; direct and
+  force pushes are blocked), since cloud sessions follow it.
 
 Open:
 
@@ -434,4 +463,7 @@ Open:
    characters, set by Claude under Claude Code's 10,000.
 4. Which sessions count as one project: every cloud session with more than one
    repository runs in `/home/user`, so all of them share the project `-home-user`, and
-   the hosted index's "latest session" and search span all of them.
+   the hosted index's "latest session" and search span all of them. Recall spans every
+   project and goes by relevance, which may settle this.
+5. The similarity a part needs to join a first message: 0.6, Claude's guess for bge-m3,
+   to be judged by output once the Worker runs; and whether Jev sorts the candidates.

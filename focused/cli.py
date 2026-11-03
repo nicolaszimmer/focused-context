@@ -8,6 +8,7 @@
     focused context [--session ID] [--full]   # the summary loaded after /clear and compaction
     focused install [--jev] [--follow BRANCH] [--uninstall]  # hooks and commands for a cloud environment
     focused update --follow BRANCH [--jev]    # bring that install to where the branch is now
+    focused recall <words>                    # what earlier sessions said about it (needs the hosted index)
 
 With FOCUSED_JEV=1 and an OpenRouter key, the Stop hook also asks Jev what each part
 of a message does and which paragraphs answer it (focused/jev.py); `answers` then lists
@@ -40,7 +41,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from . import idle, install, jev, remote, store, summary
+from . import idle, install, jev, recall, remote, store, summary
 from . import update as updater
 from .transcript import LISTED, is_own_command
 
@@ -400,14 +401,30 @@ def cmd_hook_session_start(args) -> int:
 def cmd_hook_prompt(args) -> int:
     """UserPromptSubmit: after an hour without a reply, stop one typed message, so the
     person can /clear before the session is sent again without the cache
-    (focused/idle.py). Prints nothing otherwise, as plain stdout would be added to
-    Claude's context. Fails open: an error lets the message through."""
+    (focused/idle.py). With a session's first typed message, add what earlier sessions
+    said that bears on it (focused/recall.py). Prints nothing otherwise, as plain stdout
+    would be added to Claude's context. Fails open: an error lets the message through."""
     try:
-        reason = idle.check(json.load(sys.stdin))
+        payload = json.load(sys.stdin)
+        reason = idle.check(payload)
         if reason:
             sys.stdout.write(json.dumps({"decision": "block", "reason": reason}))
+            return 0
     except Exception:  # noqa: BLE001 - a hook must never fail the session
         _log("hook prompt")
+        return 0
+    try:
+        prompt, path = payload.get("prompt") or "", payload.get("transcript_path")
+        if remote.settings() is None or not recall.typed(prompt) or not path or not recall.first_message(path):
+            return 0
+        items = recall.related(prompt, exclude=payload.get("session_id"))
+        if items:
+            sys.stdout.write(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit", "additionalContext": recall.block(items)}}))
+    except (remote.RemoteError, jev.JevError) as error:
+        _log("recall", str(error))
+    except Exception:  # noqa: BLE001 - a hook must never fail the session
+        _log("hook prompt recall")
     return 0
 
 
@@ -659,6 +676,22 @@ def cmd_update(args) -> int:
     return 0
 
 
+def cmd_recall(args) -> int:
+    """What earlier sessions said that bears on the words given (focused/recall.py), from
+    the hosted index, by meaning and by words; the session asking is left out."""
+    if not args.words:
+        return _fail(args, "Name what to recall, as in: recall how the Worker is deployed", 2)
+    try:
+        if remote.settings() is None:
+            return _fail(args, "focused: recall needs the hosted index: set FOCUSED_REMOTE_URL and FOCUSED_REMOTE_TOKEN "
+                               "(README, \"The hosted index\").", 1)
+        found = remote.recall(" ".join(args.words), exclude=args.in_session, limit=args.limit)
+    except remote.RemoteError as error:
+        return _fail(args, f"focused: could not reach the hosted index ({error}).", 1)
+    print(recall.listing(found["items"], found["vectors"]))
+    return 0
+
+
 def cmd_find(args) -> int:
     if not args.words:
         return _fail(args, "Name the words to search for, as in: find webhook retry", 2)
@@ -767,6 +800,11 @@ def main(argv=None) -> int:
     keep.add_argument("--root", help="the focused-context checkout installed now (default: this one)")
     keep.add_argument("--hook", action="store_true", help="run as the SessionStart hook: print nothing, log failures")
     keep.set_defaults(run=cmd_update)
+
+    remember = sub.add_parser("recall", help="what earlier sessions said that bears on these words")
+    remember.add_argument("words", nargs="*")
+    remember.add_argument("--limit", type=int, default=5, choices=range(1, 21), metavar="1-20")
+    remember.set_defaults(run=cmd_recall)
 
     find = sub.add_parser("find", help="search prompts and answers")
     find.add_argument("words", nargs="*")

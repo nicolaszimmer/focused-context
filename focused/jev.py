@@ -221,6 +221,39 @@ def answer_requests(parts: list, n: int, paragraphs: list, wanted: set) -> list:
     return requests
 
 
+# Recall (focused/recall.py): does an earlier message, with what answered it then, bear on
+# the one just sent? Ships switched off (FOCUSED_JEV_RECALL=1) and is judged by its output.
+# Its words are kept out of WORDED: nothing stored depends on them, so changing them asks
+# nothing again.
+RECALL_POLICY = (
+    "state.message is a message a person just sent to Claude, an AI coding assistant, at the start of a working "
+    "session. state.earlier lists parts of messages the person sent in earlier sessions, each with what answered "
+    "it then. An earlier item bears on state.message when knowing it would help Claude answer or act on "
+    "state.message: the same topic, a decision or finding it depends on, or work it continues. " + DATA_ONLY
+)
+RECALL_QUESTION = "Does the earlier item with id {pid} in state.earlier bear on state.message? (See state.policy.)"
+RECALL_TRUE = "The earlier item with id {pid} bears on state.message."
+RECALL_FALSE = "The earlier item with id {pid} does not bear on state.message."
+
+
+def recall_request(message: str, items: list) -> tuple:
+    """(state, questions): whether each earlier item bears on the message.
+    items: [(text of the earlier part, [its answers])]."""
+    earlier = [{"id": f"e{i}", "part": part[:4000], "answered": [a[:2000] for a in answers]}
+               for i, (part, answers) in enumerate(items[:MAX_QUESTIONS], 1)]
+    state = {"policy": RECALL_POLICY, "message": message[:MAX_MESSAGE], "earlier": earlier}
+    questions = {f"bears_{e['id']}": {
+        "type": "noul",
+        "instructions": RECALL_QUESTION.format(pid=e["id"]),
+        "criteria": {"true": RECALL_TRUE.format(pid=e["id"]), "false": RECALL_FALSE.format(pid=e["id"])},
+    } for e in earlier}
+    return state, questions
+
+
+def read_recall(answers: dict, count: int) -> list:
+    return [float(answers[f"bears_e{i}"]["noul"]) for i in range(1, count + 1)]
+
+
 def tags(kinds: Optional[dict]) -> list:
     """The kinds Jev gives at least CUT, or ["other"] when it gives none."""
     found = [kind for kind, p in (kinds or {}).items() if p >= CUT]
