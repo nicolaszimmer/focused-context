@@ -5,8 +5,8 @@ asked, what Claude answered, and the facts the next question needs. Reload
 only those after a break, and find an answer without scrolling past the
 chatter.
 
-Status: an idea, with one measurement tool. Nothing here runs as a hook yet.
-Building it is a decision still open (see the end).
+Status: step 1, the turn index, is built (`focused/`). Its Stop hook is off
+until you switch it on (see "Using step 1"). Steps 2 and 3 are designs.
 
 ## The problem
 
@@ -32,9 +32,9 @@ Building it is a decision still open (see the end).
   - **Attention.** A long, noisy context dilutes what the model attends to.
     People pay this too, when they read it back.
 - **One measurement so far.** `profile_transcript.py` on the session that
-  wrote this note, after its first research turn: tool results were 91% of
-  the conversation's tokens. The person's prompt and Claude's reply were
-  under 1%. That is one research turn with no GitHub events, so it shows
+  wrote this note, after two questions and ten wake-ups from GitHub and
+  CodeRabbit: tool results were 84% of the conversation's tokens. The two
+  prompts and their two answers were 0.9%. That is one session, so it shows
   the shape, not a rate.
 
 ## What Claude Code lets a hook do
@@ -64,11 +64,15 @@ in an index kept beside the transcript.
 
 ## Proposal
 
-### 1. An index of turns, in code (no model)
+### 1. An index of turns, in code (no model). Built.
 
-- A `Stop` hook appends the finished turn to SQLite: the human prompt, the
+- A `Stop` hook upserts each turn into SQLite: the human prompt, the
   final answer (`last_assistant_message`), the synthetic turns it folded
-  in, files touched, commits and pull requests.
+  in, files edited, commits and pull requests. It is keyed by session and
+  the uuid of the prompt's entry, so a second `Stop` for the same turn
+  updates its row instead of adding one.
+- A wake-up, a notification or hook feedback is its own turn, filed under
+  the question it followed. Its reply never replaces that question's answer.
 - Whether a turn is a person's, which text is the final answer, and which
   files changed are facts in the transcript. They are computed, never asked
   (Jev practice 3, rapid-review-bot `dev/jev-in-production.md` §4).
@@ -88,6 +92,13 @@ in an index kept beside the transcript.
 - A hook cannot run `/clear` itself. The person decides when to rebuild.
 
 ### 3. Scoring chunks with Jev, per query
+
+Decided on 2026-11-03: try it with Jev, and possibly replace Jev later with
+a self-hosted model. So the scorer sits behind one call (a query and named
+chunks in, a distribution per chunk out), and the practices below apply to
+whichever model answers. A new model is a new scale: its thresholds are set
+again from labels (practices 7 and 13). Before any chunk leaves the
+machine, the person opts in and secrets are redacted.
 
 This is the paper's visibility ladder ("Jev Engineering for Coding Agents",
 §V, in rapid-review-bot `dev/`), held to the practices rapid-review-bot
@@ -130,9 +141,58 @@ comes last, if at all.
   the record.
 - One database per project, not per session: `/clear` starts a new session
   id, and the reload has to reach the old one.
-- Tables: `turns`, `chunks` (with FTS5), and `scores`, which store Jev's full
+- Built: `sessions`, and `turns` with an FTS5 index on prompt and answer.
+  The file lives in `~/.claude/focused/<project>.sqlite`, where `<project>`
+  is Claude Code's own folder name for the project. It is readable by its
+  owner only, and turns older than `cleanupPeriodDays` (30 by default) are
+  deleted on each run, so the index never outlives the transcripts.
+- For step 3: `chunks`, and `scores`, which store the scorer's full
   distribution with the model and a digest of the question, so a threshold
   can be replayed offline (practices 5 and 7).
+
+## Using step 1
+
+Python 3.9 or later, standard library only.
+
+```
+pipx install git+https://github.com/nicolaszimmer/focused-context   # gives `focused`
+focused index --all          # backfill from ~/.claude/projects
+focused answers              # this project's latest session: each question, its answer
+focused answers -n 3 --events   # the last 3, with the folded wake-ups and their replies
+focused find stripe webhook  # search every indexed prompt and answer in this project
+```
+
+To index as you go, add the Stop hook to a settings file. It runs in the
+background (`async`), prints nothing, and never fails a turn: errors go to
+`~/.claude/focused/errors.log`. On a 62 MB transcript it takes 0.6 s.
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "focused hook stop", "async": true } ] }
+    ]
+  }
+}
+```
+
+Without installing: `PYTHONPATH=/path/to/focused-context python3 -m focused …`.
+
+## Where it runs
+
+From the settings and cloud-session docs (code.claude.com/docs, read
+2026-11-03):
+
+| Surface | Does the Stop hook run? | Does the index persist? |
+|---|---|---|
+| Terminal, VS Code and JetBrains extensions, desktop app (local) | Yes. All four read the same settings files: put the hook in `~/.claude/settings.json` for every project, or in a project's `.claude/settings.json` | Yes, in `~/.claude/focused/` |
+| Cloud session with one repository | Only from that repository's committed `.claude/settings.json`. User settings are not read. `focused` must be installed by the environment's setup script, or called from the clone | No. The VM is reclaimed after inactivity. The conversation is restored on reopen, so the index can be rebuilt with `focused index` (not yet verified that the transcript file is restored at the same path) |
+| Cloud session with several repositories, or a thread in a project | No. Repository hooks are not read there | No. `focused index` still works when run by hand |
+
+For step 3, Jev needs `OPENROUTER_API_KEY` and a network that reaches
+openrouter.ai. Locally that is your own environment. In the cloud it is
+the environment's settings: the one this note was written in reaches
+openrouter.ai and has the key set.
 
 ## Measure first
 
@@ -146,13 +206,19 @@ question a person asked, with Claude's final answer and the number of
 synthetic turns folded into it. Run it on a few long sessions with GitHub
 events before deciding to build anything.
 
-## Open decisions
+## Decisions
 
-1. Whether to build step 1 (the turn index and `focused answers`). It needs
-   no model.
-2. Whether to try step 3 with Jev at all, given that the transcript leaves
-   the machine, and given how little relevance questions have been measured.
-3. Where the threshold's labels come from: an hour of your own marking, or
-   none until step 1 has run for a while.
-4. The language: Python's standard library has SQLite and suits hooks; Node
-   would match rapid-review-bot.
+Made on 2026-11-03: build step 1, in Python; try step 3 with Jev, with a
+self-hosted model as a possible replacement later.
+
+Open:
+
+1. Whether to switch the Stop hook on, and where: your user settings for
+   local sessions, and the `.claude/settings.json` of the repositories you
+   use in cloud sessions.
+2. Whether step 1 does what you need after some use. Steps 2 and 3 build on
+   it, so they wait for this.
+3. Where step 3's labels come from: an hour of your own marking, or the
+   index's own record once it has run for a while.
+4. Whether 30 days, following `cleanupPeriodDays`, is the right retention
+   for the index.
