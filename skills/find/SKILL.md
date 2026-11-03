@@ -5,11 +5,14 @@ disable-model-invocation: true
 allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/focused.py" *)
 ---
 
-```!
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/focused.py" --in-session "${CLAUDE_SESSION_ID}" --args-stdin find <<'FOCUSED_ARGS'
-$ARGUMENTS
-FOCUSED_ARGS
+Run this command with the Bash tool, adding each word the user gave at the end as its
+own single-quoted argument, with any single quote inside a word escaped as `'\''`:
+
+```
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/focused.py" --in-session "${CLAUDE_SESSION_ID}" find
 ```
 
-Show the matches above to the user exactly as they are, in a code block. Do not
-summarize or comment on them, and run nothing else.
+The user's words: $ARGUMENTS
+
+Then show the command's output to the user exactly as it is, in a code block. Do not
+summarize or comment on it, and run nothing else.

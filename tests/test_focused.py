@@ -267,6 +267,16 @@ class HeadlessAndCommandTest(unittest.TestCase):
         self.assertEqual([t.answer for t in turns], ["the sky is blue", "```# session s9```"])
         self.assertTrue(all(t.listed for t in turns))
 
+    def test_answers_leaves_out_the_plugins_own_commands(self):
+        from focused.cli import format_turns
+        from focused.transcript import parse_entries
+        rows = [{"turn_key": t.key, "origin": t.origin, "parent_key": t.parent_key, "started_at": t.started_at,
+                 "prompt": t.prompt, "answer": t.answer, "files": "[]", "commits": "[]", "pull_requests": "[]"}
+                for t in parse_entries(self.ENTRIES).turns]
+        out = format_turns(rows)
+        self.assertIn("Q: Reply with exactly: the sky is blue", out)
+        self.assertNotIn("/focused:answers", out)
+
     def test_find_skips_the_plugins_own_command_turns(self):
         with tempfile.TemporaryDirectory() as tmp:
             transcript = Path(tmp) / "s9.jsonl"
@@ -291,8 +301,10 @@ class PluginTest(unittest.TestCase):
         for skill in ("answers", "find"):
             body = (ROOT / "skills" / skill / "SKILL.md").read_text()
             self.assertIn("disable-model-invocation: true", body)
-            self.assertIn('--in-session "${CLAUDE_SESSION_ID}" --args-stdin', body)
-            self.assertIn("<<'FOCUSED_ARGS'\n$ARGUMENTS\nFOCUSED_ARGS", body)  # quoted heredoc: no shell
+            self.assertIn('--in-session "${CLAUDE_SESSION_ID}"', body)
+            # What the user types never reaches a shell unquoted: no injected (!) command.
+            self.assertNotIn("!`", body)
+            self.assertNotIn("```!", body)
 
     def test_launcher_runs_the_hook_without_installing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -333,24 +345,21 @@ class InSessionTest(Fixture):
         self.assertEqual(code, 0)
         self.assertIn("[hooks]", out.lower())
 
-    def run_skill(self, *args, stdin):
-        out = io.StringIO()
-        with redirect_stdout(out), mock.patch("sys.stdin", io.StringIO(stdin)):
-            code = cli.main(["--in-session", "s1", "--args-stdin", *args])
-        return code, out.getvalue()
-
-    def test_skill_arguments_arrive_as_plain_words(self):
-        code, out = self.run_skill("find", stdin="hooks don't $(touch pwned) ; `id` \"\n")
-        self.assertEqual(code, 0)
+    def test_words_with_quotes_and_shell_characters_are_search_terms(self):
+        code, out = self.run_cli("--in-session", "s1", "find", "hooks", "don't", "$(touch pwned)", "`id`")
+        self.assertEqual((code, out.strip()), (0, "No match."))
         self.assertFalse(Path("pwned").exists())
-        code, out = self.run_skill("answers", stdin="-n 1 --events\n")
-        self.assertEqual(code, 0)
-        self.assertIn("## 4.", out)
 
     def test_bad_skill_options_are_reported_not_fatal(self):
-        code, out = self.run_skill("answers", stdin="--bogus\n")
+        code, out = self.run_cli("--in-session", "s1", "answers", "--bogus")
         self.assertEqual(code, 0)
         self.assertIn("unrecognized arguments: --bogus", out)
+
+    def test_an_index_that_cannot_be_opened_is_reported_not_fatal(self):
+        with mock.patch.object(store, "connect", side_effect=sqlite3.OperationalError("unable to open database file")):
+            code, out = self.run_cli("--in-session", "s1", "answers")
+        self.assertEqual(code, 0)
+        self.assertIn("unable to open database file", out)
 
     def test_a_failed_refresh_falls_back_to_the_existing_index(self):
         self.run_cli("--in-session", "s1", "answers")

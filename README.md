@@ -175,8 +175,12 @@ Installed for your user, the plugin is on in every project on that machine.
   `~/.claude/focused/errors.log`.
 - **Two commands.** `/focused:answers [-n N] [--events] [--full]` lists this
   session's questions with their answers; `/focused:find <words>` searches every
-  question and answer in this project. Each reindexes the session first. Their
-  output enters the conversation, so they cost what they show.
+  question and answer in this project. Each reindexes the session first, and
+  leaves out the plugin's own `/focused:` commands. Claude runs them through the
+  Bash tool with your words as quoted arguments: what you type is never pasted
+  into a shell command, because no heredoc or quoting holds against text that
+  may contain newlines. Their output enters the conversation, so they cost what
+  they show.
 
 The index stays in `~/.claude/focused/`, outside the plugin, so it survives
 uninstalling the plugin. Delete that folder to remove it.

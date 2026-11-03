@@ -7,10 +7,8 @@
     focused find <words>
 
 From a skill, pass --in-session <id>: focused reindexes that session's transcript, uses
-its project's index, and reports problems on stdout with exit code 0, because a failing
-command aborts a skill. With --args-stdin, the subcommand's arguments are read from
-stdin and split on whitespace, so a skill can pass what the user typed through a quoted
-heredoc instead of through the shell.
+its project's index, and reports every problem on stdout with exit code 0, so the skill
+shows it instead of failing.
 """
 
 
@@ -61,9 +59,14 @@ def _list(value: str) -> list:
         return []
 
 
+def is_question(row) -> bool:
+    """A turn a person may have started, other than the plugin's own /focused: commands."""
+    return row["origin"] in LISTED and not (row["prompt"] or "").startswith("/focused:")
+
+
 def format_turns(rows, full: bool = False, events: bool = False, number_from: int = 1) -> str:
     """Each listed turn with its answer; synthetic turns folded under it."""
-    listed = [r for r in rows if r["origin"] in LISTED]
+    listed = [r for r in rows if is_question(r)]
     children: dict = {}
     for row in rows:
         if row["parent_key"]:
@@ -192,7 +195,7 @@ def _answers(args, conn) -> int:
     rows = store.session_turns(conn, session)
     if not rows:
         return _fail(args, f"No indexed sessions match {session}. Run `focused index --all`, or enable the Stop hook.", 1)
-    listed = [r for r in rows if r["origin"] in LISTED]
+    listed = [r for r in rows if is_question(r)]
     keep = {r["turn_key"] for r in listed[-args.n:]} if args.n else None
     if keep is not None:
         rows = [r for r in rows if r["turn_key"] in keep or r["parent_key"] in keep]
@@ -218,9 +221,6 @@ def cmd_find(args) -> int:
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if "--args-stdin" in argv:
-        argv.remove("--args-stdin")
-        argv += sys.stdin.read().split()  # plain words: no shell, no quote handling
     Parser.skill_mode = "--in-session" in argv
     parser = Parser(prog="focused", description=__doc__,
                     formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -257,7 +257,13 @@ def main(argv=None) -> int:
     except SkillMessage as message:
         print(message)
         return 0
-    return args.run(args)
+    if not args.in_session:
+        return args.run(args)
+    try:
+        return args.run(args)
+    except (OSError, ValueError, sqlite3.Error) as error:  # e.g. the index can't be opened at all
+        print(f"focused: {error}")
+        return 0
 
 
 if __name__ == "__main__":
