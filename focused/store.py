@@ -160,6 +160,11 @@ def index_transcript(conn: sqlite3.Connection, path, stop_message: Optional[str]
                 "commits": json.dumps(turn.commits),
                 "pull_requests": json.dumps(turn.pull_requests),
             })
+        # Rows for turns this read no longer finds (a rule changed how turns split) go.
+        keys = [t.key for t in parsed.turns]
+        conn.execute(
+            f"DELETE FROM turns WHERE session_id = ? AND turn_key NOT IN ({','.join('?' * len(keys))})",
+            (session_id, *keys))
         if stop_message and parsed.turns:
             # The transcript may not hold the final message yet when Stop fires.
             conn.execute(

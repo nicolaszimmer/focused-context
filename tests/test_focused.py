@@ -95,7 +95,7 @@ class ParseTest(Fixture):
     def test_turns_and_origins(self):
         turns = parse(self.transcript).turns
         self.assertEqual([t.origin for t in turns],
-                         ["human", "task-notification", "meta", "human", "human", "unknown"])
+                         ["human", "task-notification", "meta", "human", "unknown"])
 
     def test_wake_up_reply_does_not_replace_the_answer(self):
         first = parse(self.transcript).turns[0]
@@ -108,11 +108,22 @@ class ParseTest(Fixture):
         self.assertEqual(turns[1].answer, "No action needed.")
 
     def test_text_followed_by_a_tool_call_is_not_an_answer(self):
-        self.assertIsNone(parse(self.transcript).turns[3].answer)
+        from focused.transcript import parse_entries
+        turns = parse_entries([user("x1", "q", **HUMAN), assistant(text("Looking."), tool("t9", "Read", file_path="x"))]).turns
+        self.assertIsNone(turns[0].answer)
 
-    def test_queued_message_is_a_question(self):
-        queued = parse(self.transcript).turns[4]
-        self.assertEqual((queued.prompt, queued.answer), ("also this", "Both done."))
+    def test_a_message_sent_while_working_joins_the_turn(self):
+        turn = parse(self.transcript).turns[3]  # the image prompt, still working when "also this" came
+        self.assertEqual((turn.prompt.strip(), turn.answer), ("(sent while Claude was working) also this", "Both done."))
+
+    def test_a_message_sent_after_the_answer_starts_a_turn(self):
+        from focused.transcript import parse_entries
+        entries = [user("x1", "first", **HUMAN), assistant(text("Done.")),
+                   {"type": "attachment", "uuid": "x2", "sessionId": "s1", "timestamp": "2026-11-03T06:20:00Z",
+                    "attachment": {"type": "queued_command", "prompt": "next", "origin": {"kind": "human"}}},
+                   assistant(text("Next done."))]
+        queued = parse_entries(entries).turns[1]
+        self.assertEqual((queued.origin, queued.prompt, queued.answer), ("human", "next", "Next done."))
 
     def test_facts_from_tool_calls(self):
         first = parse(self.transcript).turns[0]
@@ -139,7 +150,7 @@ class StoreTest(Fixture):
     def test_indexing_twice_adds_no_rows(self):
         conn = self.index()
         self.index()
-        self.assertEqual(self.count(conn), 6)
+        self.assertEqual(self.count(conn), 5)
         self.assertEqual(self.count(conn, "SELECT count(*) FROM turns_fts WHERE turns_fts MATCH 'hooks'"), 1)
 
     def test_stop_hook_answer_wins_over_a_lagging_transcript(self):
@@ -147,6 +158,19 @@ class StoreTest(Fixture):
         self.index()
         row = conn.execute("SELECT answer, answer_source FROM turns WHERE turn_key = 'old'").fetchone()
         self.assertEqual(tuple(row), ("The final words.", "stop-hook"))
+
+    def test_reindexing_drops_turns_the_transcript_no_longer_splits_off(self):
+        conn = self.index()
+        conn.execute("INSERT INTO turns (session_id, turn_key, seq, origin, prompt) VALUES ('s1', 'q1', 9, 'human', 'also this')")
+        conn.commit()
+        self.index()
+        self.assertEqual(self.count(conn, "SELECT count(*) FROM turns WHERE turn_key = 'q1'"), 0)
+        self.assertEqual(self.count(conn), 5)
+
+    def test_a_prompt_with_no_text_shows_as_such(self):
+        out = cli.format_turns([{"turn_key": "i1", "origin": "human", "parent_key": None, "started_at": None,
+                                 "prompt": "", "answer": None, "files": "[]", "commits": "[]", "pull_requests": "[]"}])
+        self.assertIn("Q: (no text)", out)
 
     def test_search(self):
         conn = self.index()
@@ -172,7 +196,7 @@ class StoreTest(Fixture):
             path = Path(f"{db}{suffix}")
             self.assertTrue(path.exists(), path)
             self.assertEqual(os.stat(path).st_mode & 0o777, 0o600, path)
-        self.assertEqual(self.count(conn), 6)
+        self.assertEqual(self.count(conn), 5)
 
 
 class CliTest(Fixture):
@@ -192,7 +216,7 @@ class CliTest(Fixture):
             code, out = self.run_cli("index", str(bad), str(missing), str(self.transcript))
         self.assertEqual(code, 1)
         self.assertIn("bad.jsonl: 1 questions", out)  # the cut-off character no longer stops the read
-        self.assertIn("s1.jsonl: 4 questions", out)
+        self.assertIn("s1.jsonl: 3 questions", out)
         self.assertIn("missing.jsonl: skipped", err.getvalue())
 
     def run_cli(self, *args, stdin=None):
@@ -207,7 +231,7 @@ class CliTest(Fixture):
         self.assertEqual((code, out), (0, ""))
         conn = sqlite3.connect(store.db_for_transcript(self.transcript))
         self.connections.append(conn)
-        self.assertEqual(conn.execute("SELECT count(*) FROM turns").fetchone()[0], 6)
+        self.assertEqual(conn.execute("SELECT count(*) FROM turns").fetchone()[0], 5)
 
     def test_stop_hook_fails_open(self):
         code, out = self.run_cli("hook", "stop", stdin="not json")
@@ -222,7 +246,7 @@ class CliTest(Fixture):
         self.assertIn("A: Hooks only add context.", out)
         self.assertIn("+2 events: 1 task-notification, 1 meta", out)
         self.assertIn("-> No action needed.", out)
-        self.assertIn("Q: (no text)", out)
+        self.assertIn("Q: (sent while Claude was working) also this", out)  # the image prompt has no text
         self.assertIn("origin unknown", out)
         self.assertIn("How do hooks work? [...]", out)
 
@@ -230,7 +254,7 @@ class CliTest(Fixture):
         db = str(store.db_for_transcript(self.transcript))
         self.run_cli("--db", db, "index", str(self.transcript))
         _, out = self.run_cli("--db", db, "answers", "-n", "1")
-        self.assertIn("## 4.", out)
+        self.assertIn("## 3.", out)
         self.assertNotIn("Hooks only add context.", out)
 
     def test_find(self):
@@ -342,7 +366,7 @@ class PluginTest(unittest.TestCase):
                                   capture_output=True, env=env, cwd=tmp)
             self.assertEqual((done.returncode, done.stdout), (0, ""))
             with closing(sqlite3.connect(Path(tmp) / "home" / "-p.sqlite")) as conn:
-                self.assertEqual(conn.execute("SELECT count(*) FROM turns").fetchone()[0], 6)
+                self.assertEqual(conn.execute("SELECT count(*) FROM turns").fetchone()[0], 5)
 
 
 class InSessionTest(Fixture):

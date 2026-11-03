@@ -12,6 +12,9 @@ no model is asked anything.
   that is marked `isMeta` or `isCompactSummary`, is synthetic, and is filed
   under the person's turn it followed. A prompt with no origin at all, as older
   transcripts store them, is "unknown" and is listed with that mark.
+- A message sent while Claude is working (a `queued_command` attachment) joins
+  the turn it was sent into, as long as that turn has no answer yet: Claude reads
+  it within the turn, and the turn's answer covers both.
 - An `isMeta` entry that arrives before Claude has replied is the expansion of
   the prompt it follows (a slash command's or skill's text), so it stays in
   that turn. A slash command is shown as "/name args".
@@ -191,9 +194,14 @@ def parse_entries(entries: Iterable[dict]) -> Transcript:
             attachment = entry.get("attachment") or {}
             name = attachment.get("type", "?")
             if name == "queued_command" and provenance(attachment) == HUMAN:
-                # A message typed while Claude was working can be stored this way.
-                prompt = text_of(attachment.get("prompt"))
+                # A message typed while Claude was working is stored this way. While the
+                # turn has no answer yet, Claude reads it within that turn and its answer
+                # covers both, so it joins the turn instead of starting one.
+                prompt = prompt_text(text_of(attachment.get("prompt")))
                 shares["human prompts"] += tokens(prompt)
+                if current is not None and current.listed and current.answer is None:
+                    current.prompt += f"\n\n(sent while Claude was working) {prompt}"
+                    continue
                 start(entry, HUMAN, prompt)
                 continue
             bucket = "fixed context (system, skills, tools)" if name in FIXED_ATTACHMENTS else f"per-turn attachment: {name}"
