@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "focused-context"
 version = "0.1.0"
 description = "Index Claude Code turns: each question with its answer, searchable"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = []
 
 [project.scripts]

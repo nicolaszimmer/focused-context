@@ -152,7 +152,7 @@ comes last, if at all.
 
 ## Using step 1
 
-Python 3.9 or later, standard library only.
+Python 3.10 or later, standard library only.
 
 ```
 pipx install git+https://github.com/nicolaszimmer/focused-context   # gives `focused`
