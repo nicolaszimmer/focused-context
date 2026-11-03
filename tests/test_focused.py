@@ -329,7 +329,10 @@ class HeadlessAndCommandTest(unittest.TestCase):
         from focused.transcript import is_own_command
         self.assertTrue(is_own_command("/focused-find sky"))
         self.assertTrue(is_own_command("/focused-answers"))
-        self.assertFalse(is_own_command("/focused-find\tsky"))
+        self.assertTrue(is_own_command("/focused-find\tsky"))
+        self.assertTrue(is_own_command("/focused-answers\n\n(sent while Claude was working) also this"))
+        self.assertFalse(is_own_command("/focused-answersx"))
+        self.assertFalse(is_own_command(" /focused-find sky"))
         self.assertFalse(is_own_command("/focused-review"))
         self.assertFalse(is_own_command("/FOCUSED-FIND sky"))  # names are case-sensitive, in the search too
 

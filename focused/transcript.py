@@ -55,10 +55,12 @@ REPOSITORY_COMMANDS = ("/focused-answers", "/focused-find")
 
 
 def is_own_command(prompt) -> bool:
-    # A slash command is stored as "/name args" with one space (prompt_text), which is also
-    # what the find query in store.search matches, so both split on that space only.
+    """Whether a turn is one of focused's own commands. The list and the search
+    (store.search) both ask this. The name ends at any whitespace: a message sent
+    while the command ran is appended after a blank line."""
     prompt = prompt or ""
-    return prompt.startswith(PLUGIN_NAMESPACE) or prompt.split(" ", 1)[0] in REPOSITORY_COMMANDS
+    name = re.match(r"\S*", prompt).group()
+    return prompt.startswith(PLUGIN_NAMESPACE) or name in REPOSITORY_COMMANDS
 COMMAND_NAME = re.compile(r"<command-name>\s*(.*?)\s*</command-name>", re.S)
 COMMAND_ARGS = re.compile(r"<command-args>\s*(.*?)\s*</command-args>", re.S)
 
