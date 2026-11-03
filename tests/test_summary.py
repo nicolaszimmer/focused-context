@@ -299,7 +299,7 @@ class ChooseTest(Fixture):
             "3. s3 | (no title) | 2026-11-03 06:21 | 1 message | Where / is the retry?",
         ])
         code, out = self.context("--session", "s1")
-        self.assertIn("Summary of session s1", out)
+        self.assertIn("Summary of “Hooks and the index” (s1)", out)
 
     def test_right_after_clear_the_cleared_session_is_shown_without_asking(self):
         self.transcript.unlink()
@@ -334,4 +334,34 @@ class ChooseTest(Fixture):
         self.assertIn("summaries/abcdefgh-two.md", out)
         self.assertIn("You: Merge it.", out)
         code, out = self.context("--session", "abcdefgh")
-        self.assertIn("2 sessions start with abcdefgh: abcdefgh-one, abcdefgh-two.", out)
+        self.assertEqual(out.splitlines(), [  # offered as a choice, as in a new session
+            "focused: choose a session. 2 sessions match “abcdefgh”. The latest:",
+            "1. abcdefgh-two | (no title) | 2026-11-03 06:10 | 1 message | Merge it.",
+            "2. abcdefgh-one | (no title) | 2026-11-03 06:00 | 1 message | How do hooks work?",
+        ])
+
+    def test_a_session_is_named_by_its_title_or_words_of_it(self):
+        self.transcript.unlink()
+        self.session("s1", 0, ["How do hooks work?"], title="Hooks and the index")
+        self.session("s2", 10, ["Merge it."], title="Merge the hooks PR")
+        self.session("s3", 20, ["Deploy."], title="Worker deploy")
+        self.session("cur", 50, ["<command-name>/focused-context</command-name>"])
+        code, out = self.context("--session", "worker DEPLOY")  # any case, words in any order
+        self.assertIn("Summary of “Worker deploy” (s3)", out)
+        code, out = self.context("--session", "Hooks and the index")
+        self.assertIn("Summary of “Hooks and the index” (s1)", out)
+        code, out = self.context("--session", "hooks")  # two titles have it
+        self.assertEqual(out.splitlines()[0], "focused: choose a session. 2 sessions match “hooks”. The latest:")
+        self.assertIn("1. s2 | Merge the hooks PR |", out)
+        code, out = self.context("--session", "nothing like it")
+        self.assertIn("Session nothing like it has no messages indexed.", out)
+
+    def test_find_and_answers_name_a_session_by_its_title(self):
+        self.session("s1", 0, ["How do hooks work?"], title="Hooks and the index")
+        db = str(store.db_for_transcript(self.project / "s1.jsonl"))
+        with redirect_stdout(io.StringIO()) as out:
+            cli.main(["--db", db, "find", "hooks"])
+        self.assertIn("· “Hooks and the index” (s1) · human:", out.getvalue())
+        with redirect_stdout(io.StringIO()) as out:
+            cli.main(["--db", db, "answers", "--session", "s1"])
+        self.assertTrue(out.getvalue().startswith("# “Hooks and the index” (s1)"))

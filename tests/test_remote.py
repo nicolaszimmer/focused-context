@@ -79,8 +79,10 @@ class FakeWorker:
                     return self.reply(200, {"session_id": session, **found} if found else None) if found else \
                         self.reply(404, {"error": "no such session"})
                 if url.path == "/v1/sessions":
+                    words = query.get("title", "").casefold().split()
                     listed = [worker.listed(k, v) for k, v in worker.sessions.items()
-                              if query.get("project") in (None, v["project"])]
+                              if query.get("project") in (None, v["project"])
+                              and all(w in (v.get("title") or "").casefold() for w in words)]
                     listed.sort(key=lambda s: s["last_at"] or "", reverse=True)
                     return self.reply(200, {"sessions": listed[:int(query.get("limit", 20))]})
                 if url.path == "/v1/search":
@@ -124,10 +126,10 @@ class FakeWorker:
             if project not in (None, held["project"]):
                 continue
             prompts = {t["turn_key"]: t["prompt"] for t in held["turns"]}
-            out["turns"] += [{"session_id": session, "turn_key": t["turn_key"], "origin": t["origin"],
+            out["turns"] += [{"session_id": session, "title": held.get("title"), "turn_key": t["turn_key"], "origin": t["origin"],
                               "started_at": t["started_at"], "prompt": t["prompt"], "hit": t["prompt"]}
                              for t in held["turns"] if matches(t["prompt"], t["answer"])]
-            out["paras"] += [{"session_id": session, "turn_key": p["turn_key"], "started_at": p["started_at"],
+            out["paras"] += [{"session_id": session, "title": held.get("title"), "turn_key": p["turn_key"], "started_at": p["started_at"],
                               "prompt": prompts.get(p["turn_key"]), "hit": p["text"]}
                              for p in held["paras"] if matches(p["text"])]
         return out
@@ -343,7 +345,7 @@ class HostedCliTest(RemoteFixture):
             self.assertIn("1. s1 | Hooks and answers | 2026-11-03 06:12 | 3 messages | How do hooks work? Second line", out)
             self.assertNotIn("Summary of session", out)
             code, out = self.run_cli("--in-session", "s2", "context", "--session", "s1")
-        self.assertIn("Summary of session s1", out)
+        self.assertIn("Summary of “Hooks and answers” (s1)", out)
         self.assertIn("How do hooks work?", out)
 
     def test_after_clear_without_its_note_the_hook_asks_the_hosted_index_nothing(self):
@@ -362,7 +364,7 @@ class HostedCliTest(RemoteFixture):
         data = self.worker.sessions.pop("s1")
         self.worker.sessions[long_id] = data
         code, out = self.run_cli("answers", "--session", long_id[:8])
-        self.assertIn(f"# session {long_id}", out)
+        self.assertIn("# “Hooks and answers” (a82d5f99)", out)
         self.assertIn("A: Hooks only add context.", out)
         code, out = self.run_cli("answers", "--session", long_id[:7])  # too short to name one
         self.assertIn(f"No indexed sessions match {long_id[:7]}", out)
@@ -384,14 +386,24 @@ class HostedCliTest(RemoteFixture):
             code, out = self.run_cli("--in-session", "s2", "find", "hooks")
         self.assertEqual(code, 0)
         local, hosted = out.split("In the hosted index, from sessions not on this machine:")
-        self.assertIn("session s2", local)
-        self.assertIn("session s1 · human: How do hooks work?", hosted)
-        self.assertNotIn("session s2", hosted)  # this machine's own sessions are listed once
+        self.assertIn("session s2", local)  # no title yet
+        self.assertIn("“Hooks and answers” (s1) · human: How do hooks work?", hosted)
+        self.assertNotIn("(s2)", hosted)  # this machine's own sessions are listed once
         self.worker.fail = [500]
         with mock.patch.object(cli, "projects_dir", return_value=self.transcript.parent.parent):
             code, out = self.run_cli("--in-session", "s2", "find", "hooks")
         self.assertIn("could not search the hosted index (HTTP 500: failing on purpose)", out)
         self.assertIn("session s2", out)
+
+    def test_a_session_only_the_hosted_index_holds_is_named_by_its_title(self):
+        self.push_from_elsewhere()
+        os.environ["CLAUDE_PROJECT_DIR"] = "/work/repo"  # titles are looked up in this project: -work-repo
+        code, out = self.run_cli("answers", "--session", "hooks deploy")
+        self.assertIn("No indexed sessions match", out)  # every word must be in the title
+        code, out = self.run_cli("answers", "--session", "hooks answers")
+        self.assertIn("# “Hooks and answers” (s1)", out)
+        self.assertIn("A: Hooks only add context.", out)
+        self.assertTrue(any("title=hooks+answers" in r[1] for r in self.worker.requests))
 
 
 if __name__ == "__main__":

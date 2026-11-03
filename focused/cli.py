@@ -178,31 +178,34 @@ PLAIN_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
 SHORTEST_PREFIX = 8  # `find` shows a session by its first 8 characters
 
 
-def _resolve(args, db: Path, session: Optional[str]) -> Optional[str]:
-    """A session named by the start of its id, at least 8 characters, as its whole id, when
-    exactly one session on this machine or in the hosted index starts so; else as given."""
-    if not session or len(session) < SHORTEST_PREFIX or not PLAIN_ID.fullmatch(session) or _holds(db, session):
-        return session
-    found = set()
-    for index in [db] + ([] if args.db else sorted(store.home().glob("*.sqlite"))):
-        try:
-            with closing(sqlite3.connect(index.as_uri() + "?mode=ro", uri=True)) as conn:
-                found.update(row[0] for row in conn.execute(
-                    "SELECT session_id FROM sessions WHERE substr(session_id, 1, ?) = ?", (len(session), session)))
-        except sqlite3.Error:
-            continue
-    if not found:
-        try:
-            if remote.settings() is not None:
-                found.update(row["session_id"] for row in remote.sessions(None, limit=200)  # ids are unique
-                             if str(row.get("session_id", "")).startswith(session))
-        except remote.RemoteError:
-            pass
-    if len(found) == 1:
-        return found.pop()
-    if found:
-        print(f"focused: {len(found)} sessions start with {session}: {', '.join(sorted(found))}.\n")
-    return session
+def _named(args, db: Path, named: Optional[str]) -> Optional[str]:
+    """The id of the session `named` names: its id, the start of its id (8 characters or
+    more), its title, or words of its title, among this project's sessions here and in
+    the hosted index. When several match, they are printed as a choice (`_print_choice`,
+    which the context skill offers) and None is returned. When none matches, `named` is
+    returned as it is: an id another index or the hosted index may hold."""
+    if not named or (PLAIN_ID.fullmatch(named) and _holds(db, named)):
+        return named
+    with closing(store.connect(db)) as conn:
+        rows, problem = _sessions(conn, db, title=named, any_project=bool(PLAIN_ID.fullmatch(named)))
+    key, words = named.casefold(), named.casefold().split()
+
+    def title(row) -> str:
+        return (row.get("title") or "").casefold()
+
+    for matches in (lambda row: row["session_id"] == named,
+                    lambda row: len(named) >= SHORTEST_PREFIX and row["session_id"].startswith(named),
+                    lambda row: title(row) == key,
+                    lambda row: bool(words) and all(word in title(row) for word in words)):
+        found = [row for row in rows if matches(row)]
+        if len(found) == 1:
+            return found[0]["session_id"]
+        if found:
+            _print_choice(found, f"{CHOOSE} {len(found)} sessions match “{named}”. The latest:")
+            return None
+    if problem:
+        print(problem + "\n")
+    return named
 
 
 def _with_session(args, db: Path, session: Optional[str]) -> Path:
@@ -489,7 +492,10 @@ def cmd_index(args) -> int:
 
 def cmd_answers(args) -> int:
     db = _db(args)
-    args.session = _resolve(args, db, args.session)
+    if args.session:
+        args.session = _named(args, db, args.session)
+        if args.session is None:  # several matched, and are listed
+            return 0
     with closing(store.connect(_with_session(args, db, args.session))) as conn:
         return _answers(args, conn)
 
@@ -506,7 +512,7 @@ def _answers(args, conn) -> int:
     if keep is not None:
         rows = [r for r in rows if r["turn_key"] in keep or r["parent_key"] in keep]
     first = len(listed) - len(keep) + 1 if keep is not None else 1
-    print(f"# session {session}\n")
+    print(f"# {store.session_name(conn, session)}\n")
     print(format_turns(rows, full=args.full, events=args.events, number_from=max(first, 1),
                        views=store.turn_views(conn, session)))
     return 0
@@ -514,7 +520,10 @@ def _answers(args, conn) -> int:
 
 def cmd_context(args) -> int:
     db = _db(args)
-    args.session = _resolve(args, db, args.session)
+    if args.session:
+        args.session = _named(args, db, args.session)
+        if args.session is None:  # several matched, and are listed as a choice
+            return 0
     db = _with_session(args, db, args.session)
     with closing(store.connect(db)) as conn:
         session = args.session or args.in_session or store.latest_session(conn)
@@ -553,31 +562,39 @@ CHOOSE = "focused: choose a session."
 
 
 def _choose(conn, db: Path, current: Optional[str]) -> int:
-    """The project's latest sessions, here and in the hosted index, one a line as
-    `n. id | title | when | messages | first message`, for the context skill to offer."""
-    choices, problem = _choices(conn, db, current)
+    """The project's latest other sessions with a message in them, here and in the hosted
+    index, printed as a choice for the context skill to offer."""
+    rows, problem = _sessions(conn, db)
     if problem:
         print(problem + "\n")
+    choices = [row for row in rows if row["session_id"] != current and (row.get("messages") or 0) > 0]
     if not choices:
         print("focused: no other session of this project is indexed, so there is no summary to show.")
         return 0
+    _print_choice(choices, f"{CHOOSE} Nothing has been said in this one yet, and a new session doesn't "
+                           "always continue the latest, so focused doesn't guess. The project's latest sessions:")
+    return 0
 
+
+def _print_choice(rows: list, heading: str) -> None:
+    """Up to CHOICES sessions, newest first, one a line as
+    `n. id | title | when | messages | first message`: what skills/context offers."""
     def plain(text, limit: int) -> str:
         return preview(" ".join(str(text or "").split()).replace("|", "/"), limit)
 
-    print(f"{CHOOSE} Nothing has been said in this one yet, and a new session doesn't always continue "
-          "the latest, so focused doesn't guess. The project's latest sessions:")
-    for n, row in enumerate(choices, 1):
+    print(heading)
+    for n, row in enumerate(rows[:CHOICES], 1):
         messages = row.get("messages") or 0
         print(f"{n}. {row['session_id']} | {plain(row.get('title'), 60) if row.get('title') else '(no title)'} | "
               f"{(row.get('last_at') or '')[:16].replace('T', ' ')} | {messages} message{'' if messages == 1 else 's'} | "
               f"{plain(row.get('first_prompt'), 100)}")
-    return 0
 
 
-def _choices(conn, db: Path, current: Optional[str]) -> tuple:
-    """Up to CHOICES of the project's other sessions with a message in them, newest first,
-    from this index and the hosted one; and what went wrong reading the hosted one."""
+def _sessions(conn, db: Path, title: Optional[str] = None, any_project: bool = False) -> tuple:
+    """This project's sessions, newest first, from this index and the hosted one, each with
+    its title, its number of messages and its first message; and what went wrong reading
+    the hosted one. With `title`, the hosted index sends those whose title has its words;
+    with `any_project`, also its latest sessions of every project, for an id's start."""
     conn.create_function("is_own_command", 1, is_own_command, deterministic=True)
     listed = ", ".join("?" * len(LISTED))
     question = f"origin IN ({listed}) AND NOT is_own_command(prompt)"
@@ -585,19 +602,20 @@ def _choices(conn, db: Path, current: Optional[str]) -> tuple:
         "SELECT s.session_id, s.last_at, s.title, "
         f"(SELECT COUNT(*) FROM turns WHERE session_id = s.session_id AND {question}) AS messages, "
         f"(SELECT prompt FROM turns WHERE session_id = s.session_id AND {question} ORDER BY seq LIMIT 1) AS first_prompt "
-        "FROM sessions s WHERE s.session_id IS NOT ? ORDER BY s.last_at DESC LIMIT 20",
-        (*LISTED, *LISTED, current))}
+        "FROM sessions s ORDER BY s.last_at DESC", (*LISTED, *LISTED))}
     problem = None
     try:
         if remote.settings() is not None:
-            for row in remote.sessions(db.stem, limit=20, timeout=8.0):
+            hosted = remote.sessions(db.stem, limit=50 if title else 20, title=title, timeout=8.0)
+            if any_project:
+                hosted += remote.sessions(None, limit=200, timeout=8.0)  # ids are unique
+            for row in hosted:
                 found.setdefault(str(row.get("session_id")), row)
     except remote.RemoteError as error:
         problem = f"focused: could not list the hosted index's sessions ({error}), so these are only this machine's."
-    choices = [row for key, row in found.items()
-               if key != current and PLAIN_ID.fullmatch(key) and (row.get("messages") or 0) > 0]
-    choices.sort(key=lambda row: row.get("last_at") or "", reverse=True)
-    return choices[:CHOICES], problem
+    rows = [row for key, row in found.items() if PLAIN_ID.fullmatch(key)]
+    rows.sort(key=lambda row: row.get("last_at") or "", reverse=True)
+    return rows, problem
 
 
 def cmd_install(args) -> int:
@@ -632,12 +650,13 @@ def cmd_find(args) -> int:
         return 0 if args.in_session else 1
     for row in rows:
         when = (row["started_at"] or "")[:16].replace("T", " ")
-        print(f"- {when} · session {row['session_id'][:8]} · {row['origin']}: {row['hit']}")
+        print(f"- {when} · {store.name(row['session_id'], row['title'])} · {row['origin']}: {row['hit']}")
     if paras:
         print("\nIn Claude's replies, wake-ups included:" if rows else "In Claude's replies, wake-ups included:")
         for row in paras:
             when = (row["started_at"] or "")[:16].replace("T", " ")
-            print(f"- {when} · session {row['session_id'][:8]} · after: {preview(row['prompt'], 60, first_line=True)}\n  {row['hit']}")
+            print(f"- {when} · {store.name(row['session_id'], row['title'])} · after: "
+                  f"{preview(row['prompt'], 60, first_line=True)}\n  {row['hit']}")
     if hosted:
         print(("\n" if rows or paras else "") + "In the hosted index, from sessions not on this machine:")
         print("\n".join(hosted))
@@ -648,8 +667,8 @@ def cmd_find(args) -> int:
 
 def _hosted_find(args, project: str, here: set) -> tuple:
     """Lines for the hosted index's matches from sessions this index doesn't hold, each
-    with the full session id, as `answers --session` and `context --session` take it;
-    and what went wrong, if anything."""
+    named by its title and the start of its id, as `--session` takes either; and what
+    went wrong, if anything."""
     try:
         if remote.settings() is None:
             return [], None
@@ -661,12 +680,12 @@ def _hosted_find(args, project: str, here: set) -> tuple:
         if row.get("session_id") in here or is_own_command(row.get("prompt")):
             continue
         when = (row.get("started_at") or "")[:16].replace("T", " ")
-        lines.append(f"- {when} · session {row.get('session_id')} · {row.get('origin')}: {row.get('hit')}")
+        lines.append(f"- {when} · {store.name(str(row.get('session_id')), row.get('title'))} · {row.get('origin')}: {row.get('hit')}")
     for row in found["paras"]:
         if row.get("session_id") in here:
             continue
         when = (row.get("started_at") or "")[:16].replace("T", " ")
-        lines.append(f"- {when} · session {row.get('session_id')} · after: "
+        lines.append(f"- {when} · {store.name(str(row.get('session_id')), row.get('title'))} · after: "
                      f"{preview(row.get('prompt'), 60, first_line=True)}\n  {row.get('hit')}")
     return lines, None
 
@@ -697,14 +716,15 @@ def main(argv=None) -> int:
 
     answers = sub.add_parser("answers", help="each question with its answer")
     answers.add_argument("-n", type=int, default=0, help="only the last N questions")
-    answers.add_argument("--session", help="a session id (default: the latest in this project)")
+    answers.add_argument("--session", help="a session's title, words of its title, its id or the first 8 "
+                         "characters of its id (default: the latest in this project)")
     answers.add_argument("--events", action="store_true", help="list the folded wake-ups and their replies")
     answers.add_argument("--full", action="store_true", help="print complete prompts and answers")
     answers.set_defaults(run=cmd_answers)
 
     context = sub.add_parser("context", help="the summary loaded after /clear and compaction")
-    context.add_argument("--session", help="a session id, or its first 8 characters or more "
-                         "(default: this session; in a session with nothing said yet, a choice of the latest)")
+    context.add_argument("--session", help="a session's title, words of its title, its id or the first 8 characters "
+                         "of its id (default: this session; in a session with nothing said yet, a choice of the latest)")
     context.add_argument("--full", action="store_true", help="every message, not only what fits the hook's limit")
     context.set_defaults(run=cmd_context)
 

@@ -23,6 +23,7 @@ You [question]: What would be the implications?
 (An excerpt of a real session, lines shortened; that message had three more answer
 paragraphs.)
 
+How the parts fit, what is built and what is planned: [ARCHITECTURE.md](ARCHITECTURE.md).
 Design notes, measurements and the labelling tools live in
 [focused-context-lab](https://github.com/nicolaszimmer/focused-context-lab)
 (private).
@@ -105,9 +106,13 @@ detail matters.
   session `/clear` just ended, if it did. Otherwise it doesn't guess, since a new
   session doesn't always continue the latest one: it asks which to show, offering the
   project's three latest sessions by their titles (as Claude Code names them), with the
-  time, number of messages and first message of each, and a field for any other
-  session's id, or its first 8 characters as `/focused:find` shows them.
-  `/focused:context <id>` shows one directly.
+  time, number of messages and first message of each, and a field for typing another
+  session's title.
+- **A session is named by its title.** `/focused:context <title>` shows that session:
+  its title, or some of its words in any case and order, name it, as does its id or
+  the first 8 characters of its id. When several sessions fit, it asks which, the same
+  way. The summary, `/focused:answers` and `/focused:find` name each session by its
+  title, with the start of its id.
 
 Before building the summary, the hook re-reads the transcript into the index, which
 takes under a second. It asks Jev nothing, so it stays quick, and if the re-read
@@ -180,9 +185,9 @@ environment's settings, add its host to the allowed domains, or choose a broader
   short goes on from there next time.
 - **Reading back:** the sessions `/focused-context` offers in a new session include the
   hosted index's, so a new container offers those of earlier containers, and the one
-  chosen is read into this machine's index. `focused answers --session <id>` and
-  `focused context --session <id>` read a session this machine doesn't have the same way.
-  `/focused-find` adds the matches from sessions not on this machine, with their full ids.
+  chosen is read into this machine's index. `focused answers --session <title>` and
+  `focused context --session <title>` read a session this machine doesn't have the same
+  way. `/focused-find` adds the matches from sessions not on this machine.
 - **Retention is each side's own:** a turn deleted here for its age isn't deleted there.
   The Worker deletes turns older than its `RETENTION_DAYS` (30).
 - **If it fails** (no network, a wrong token), the hooks write it to
@@ -395,6 +400,8 @@ Made on 2026-11-03 by the maintainer:
   latest session on a guess, as not every session continues the last one's objective:
   it offers the project's three latest sessions, and a field for any other, as Claude
   Code's own questions do. Right after `/clear` it still shows the session cleared.
+- Sessions are named by their titles, as Claude Code names them: a person names one by
+  its title, and focused shows each by its title.
 
 Open:
 

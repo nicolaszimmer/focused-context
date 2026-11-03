@@ -221,10 +221,11 @@ def save(conn: sqlite3.Connection, session_id: str, data: dict) -> int:
     return len(turns)
 
 
-def sessions(project: Optional[str], limit: int = 20, timeout: float = 15.0) -> list:
+def sessions(project: Optional[str], limit: int = 20, title: Optional[str] = None, timeout: float = 15.0) -> list:
     """Recent sessions, newest first: id, project, times, title, turn and message counts,
-    and first message."""
-    query = urllib.parse.urlencode({k: v for k, v in (("project", project), ("limit", limit)) if v is not None})
+    and first message. With `title`, only those whose title has each of its words."""
+    query = urllib.parse.urlencode({k: v for k, v in (("project", project), ("title", title), ("limit", limit))
+                                    if v is not None})
     return list(_call("GET", f"/v1/sessions?{query}", timeout=timeout).get("sessions") or [])
 
 

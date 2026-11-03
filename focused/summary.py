@@ -109,7 +109,7 @@ def build(conn, session_id: str, full_path: Optional[str] = None, cap: Optional[
     short_facts = _facts(rows, recent=12)
 
     span = f"{_time(listed[0]['started_at'])}–{_time(listed[-1]['started_at'])} UTC"
-    head = (f"# Where we left off\n\nSummary of session {session_id[:8]} by focused: {len(listed)} message{'' if len(listed) == 1 else 's'}, "
+    head = (f"# Where we left off\n\nSummary of {store.session_name(conn, session_id)} by focused: {len(listed)} message{'' if len(listed) == 1 else 's'}, "
             f"{(listed[0]['started_at'] or '')[:10]} {span}. Your messages, the decisions you made and the paragraphs "
             "that answered them; tool output, narration and wake-ups are left out. Tags are Jev's reading of "
             "each part. Search earlier text with /focused:find.")

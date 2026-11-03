@@ -448,6 +448,17 @@ def turn_views(conn: sqlite3.Connection, session_id: str) -> dict:
     return views
 
 
+def name(session_id: str, title: Optional[str]) -> str:
+    """How focused names a session to a person: by its title, as Claude Code names it, with
+    the start of its id, which also names it."""
+    return f"“{title}” ({session_id[:8]})" if title else f"session {session_id[:8]}"
+
+
+def session_name(conn: sqlite3.Connection, session_id: str) -> str:
+    row = conn.execute("SELECT title FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    return name(session_id, row[0] if row else None)
+
+
 def latest_session(conn: sqlite3.Connection) -> Optional[str]:
     row = conn.execute("SELECT session_id FROM sessions ORDER BY last_at DESC LIMIT 1").fetchone()
     return row["session_id"] if row else None
@@ -466,8 +477,9 @@ def search(conn: sqlite3.Connection, words: list, limit: int = 10) -> list:
     # function the list does, so the two can't disagree on which turns those are.
     conn.create_function("is_own_command", 1, is_own_command, deterministic=True)
     return conn.execute(
-        "SELECT t.*, snippet(turns_fts, -1, '[', ']', ' … ', 12) AS hit "
+        "SELECT t.*, s.title, snippet(turns_fts, -1, '[', ']', ' … ', 12) AS hit "
         "FROM turns_fts JOIN turns t ON t.id = turns_fts.rowid "
+        "LEFT JOIN sessions s ON s.session_id = t.session_id "
         "WHERE turns_fts MATCH ? AND NOT is_own_command(t.prompt) "
         "ORDER BY rank LIMIT ?",
         (query, limit)).fetchall()
@@ -480,8 +492,10 @@ def search_paras(conn: sqlite3.Connection, words: list, limit: int = 10) -> list
     if not query:
         return []
     return conn.execute(
-        "SELECT p.session_id, p.turn_key, p.started_at, t.prompt, snippet(paras_fts, -1, '[', ']', ' … ', 12) AS hit "
+        "SELECT p.session_id, p.turn_key, p.started_at, t.prompt, s.title, "
+        "snippet(paras_fts, -1, '[', ']', ' … ', 12) AS hit "
         "FROM paras_fts JOIN paras p ON p.id = paras_fts.rowid "
         "JOIN turns t ON t.session_id = p.session_id AND t.turn_key = p.turn_key "
+        "LEFT JOIN sessions s ON s.session_id = p.session_id "
         "WHERE paras_fts MATCH ? ORDER BY rank LIMIT ?",
         (query, limit)).fetchall()
