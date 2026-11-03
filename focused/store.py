@@ -104,6 +104,13 @@ CREATE TRIGGER IF NOT EXISTS paras_au AFTER UPDATE ON paras BEGIN
     INSERT INTO paras_fts (paras_fts, rowid, text) VALUES ('delete', old.id, old.text);
     INSERT INTO paras_fts (rowid, text) VALUES (new.id, new.text);
 END;
+-- What the hosted index holds (focused/remote.py): each turn's digest as last pushed.
+CREATE TABLE IF NOT EXISTS pushed (
+    session_id TEXT NOT NULL,
+    turn_key TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    PRIMARY KEY (session_id, turn_key)
+);
 """
 
 # A turn's answer from the Stop hook is the final text Claude Code reports.
@@ -306,6 +313,10 @@ def prune(conn: sqlite3.Connection, now: Optional[datetime] = None) -> int:
     within the period goes too, even if its project's index is never opened again."""
     cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=retention_days())
     stamp = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
+    # Retention is each side's own: a turn deleted for its age isn't named gone in the
+    # next push (remote.py), so the hosted index keeps it for as long as it keeps turns.
+    conn.execute("DELETE FROM pushed WHERE EXISTS (SELECT 1 FROM turns t WHERE t.session_id = pushed.session_id "
+                 "AND t.turn_key = pushed.turn_key AND t.started_at < ?)", (stamp,))
     removed = conn.execute("DELETE FROM turns WHERE started_at < ?", (stamp,)).rowcount
     gone = [row[0] for row in conn.execute(
         "SELECT session_id FROM sessions WHERE session_id NOT IN (SELECT DISTINCT session_id FROM turns)")]

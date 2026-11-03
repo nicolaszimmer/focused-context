@@ -12,6 +12,10 @@ With FOCUSED_JEV=1 and an OpenRouter key, the Stop hook also asks Jev what each 
 of a message does and which paragraphs answer it (focused/jev.py); `answers` then lists
 the parts with their answers. Without it, each turn shows its final text, as before.
 
+With FOCUSED_REMOTE_URL and FOCUSED_REMOTE_TOKEN, the hooks and `index` also push each
+session to the hosted index (focused/remote.py); `answers --session` and `context` read
+a session from it when this machine has none, and `find` searches it too.
+
 From a skill, pass --in-session <id>: focused reindexes that session's transcript, uses
 its project's index, and reports every problem on stdout with exit code 0, so the skill
 shows it instead of failing.
@@ -34,7 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from . import idle, install, jev, store, summary
+from . import idle, install, jev, remote, store, summary
 from .transcript import LISTED, is_own_command
 
 
@@ -156,13 +160,44 @@ def _db_for_session(session: str) -> Path:
             print(f"focused: could not refresh the index ({error}); answering from the existing one.\n")
         return db
     for db in sorted(store.home().glob("*.sqlite")):  # the transcript is gone, the index may not be
-        try:
-            with closing(sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)) as conn:
-                if conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session,)).fetchone():
-                    return db
-        except sqlite3.Error:
-            continue
+        if _holds(db, session):
+            return db
     return store.db_for_cwd(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+
+
+def _holds(db: Path, session: str) -> bool:
+    try:
+        with closing(sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)) as conn:
+            return conn.execute("SELECT 1 FROM turns WHERE session_id = ? LIMIT 1", (session,)).fetchone() is not None
+    except sqlite3.Error:
+        return False
+
+
+def _with_session(args, db: Path, session: Optional[str]) -> Path:
+    """The index that holds `session`: this project's, another one on this machine, or
+    the one its rows are read into from the hosted index (its own project's, or --db).
+    Without any, this project's, which then says it has no such session."""
+    if not session:
+        return db
+    if _holds(db, session):
+        return db
+    if not args.db:
+        for other in sorted(store.home().glob("*.sqlite")):
+            if other != db and _holds(other, session):
+                return other
+    try:
+        if remote.settings() is None:
+            return db
+        data = remote.fetch(session)
+        if data is None:
+            return db
+        target = db if args.db else store.home() / f"{data['project']}.sqlite"
+        with closing(store.connect(target)) as conn:
+            remote.save(conn, session, data)
+        return target
+    except (remote.RemoteError, sqlite3.Error) as error:
+        print(f"focused: could not read session {session} from the hosted index ({error}).\n")
+        return db
 
 
 def _fail(args, message: str, code: int) -> int:
@@ -235,14 +270,49 @@ def _cleared(db: Path) -> Optional[str]:
 
 def _previous_session(conn, db: Path, current: Optional[str]) -> Optional[str]:
     """The session /clear just ended (its SessionEnd note), else the project's most
-    recent other session, re-read so its last turns are in."""
+    recent other session, re-read so its last turns are in. When this machine has no
+    other session, as in a new cloud container, the project's latest in the hosted index."""
     target = _cleared(db) or next((row[0] for row in conn.execute(
         "SELECT session_id FROM sessions WHERE session_id IS NOT ? ORDER BY last_at DESC LIMIT 1",
-        (current,))), None)
+        (current,))), None) or _hosted_previous(conn, db, current)
     row = conn.execute("SELECT transcript_path FROM sessions WHERE session_id = ?", (target,)).fetchone()
     if row and row[0]:
         _reindex(conn, row[0])  # its last turns, if the Stop hook hadn't got to them
     return target
+
+
+def _hosted_previous(conn, db: Path, current: Optional[str]) -> Optional[str]:
+    """The project's most recent other session in the hosted index, read into this one."""
+    try:
+        if remote.settings() is None:
+            return None
+        listed = remote.sessions(db.stem, limit=5, timeout=5.0)
+        target = next((row.get("session_id") for row in listed if row.get("session_id") != current), None)
+        data = remote.fetch(target, timeout=5.0) if target else None
+        if data is None:
+            return None
+        remote.save(conn, target, data)
+        return target
+    except (remote.RemoteError, sqlite3.Error) as error:
+        failure = str(error)
+    _log("hosted index", f"the previous session: {failure}")
+    return None
+
+
+def _push(conn, session: str, transcript, timeout: float) -> Optional[str]:
+    """Push what changed in a session to the hosted index, if one is set up. Returns
+    what went wrong, also written to the log, or None."""
+    try:
+        if remote.settings() is None:
+            return None
+        done = remote.push(conn, session, Path(transcript).parent.name, timeout=timeout)
+        for key in done["skipped"]:
+            _log("push", f"session {session}: turn {key} is larger than a push can carry")
+        return None
+    except (remote.RemoteError, sqlite3.Error) as error:
+        failure = f"session {session}: {error}"
+    _log("push", failure)
+    return failure
 
 
 def _reindex(conn, path) -> None:
@@ -337,12 +407,12 @@ def cmd_hook_stop(args) -> int:
             stop_message = payload.get("last_assistant_message")
             with closing(store.connect(_db(args, path))) as conn:
                 parsed = store.index_transcript(conn, path, stop_message=stop_message)
+                session = parsed.session_id or Path(path).stem
                 if args.event == "stop" and jev.enabled():
                     wanted = (stop_message or "").strip()
                     if wanted and not any(wanted == reply.strip() for t in parsed.turns for reply in t.replies):
                         time.sleep(2)  # the transcript may not hold the final message yet
                         parsed = store.index_transcript(conn, path, stop_message=stop_message)
-                    session = parsed.session_id or Path(path).stem
                     with _SessionLock(session) as mine:
                         if mine:
                             try:
@@ -351,6 +421,8 @@ def cmd_hook_stop(args) -> int:
                                     _log("jev", error)
                             except Exception:  # noqa: BLE001 - what Jev didn't read is shown as before
                                 _log("jev")
+                # SessionEnd's time is short; what it can't push, the next push sends.
+                _push(conn, session, path, timeout=60.0 if args.event == "stop" else 8.0)
     except Exception:  # noqa: BLE001 - a hook must never fail the turn
         _log("hook stop")
     return 0
@@ -366,18 +438,30 @@ def cmd_index(args) -> int:
     if args.jev and not jev.api_key():
         print("--jev needs an OpenRouter key: FOCUSED_OPENROUTER_API_KEY or OPENROUTER_API_KEY.", file=sys.stderr)
         return 2
+    try:
+        hosted = remote.settings() is not None
+    except remote.RemoteError as error:
+        print(f"focused: {error}", file=sys.stderr)
+        return 2
     failed = 0
     for path in paths:  # one bad transcript must not stop the rest
         asked = ""
         try:
             with closing(store.connect(_db(args, path))) as conn:
                 parsed = store.index_transcript(conn, path)
+                session = parsed.session_id or Path(path).stem
                 if args.jev:
-                    done = store.ask_jev(conn, parsed.session_id or Path(path).stem, budget=float("inf"))
+                    done = store.ask_jev(conn, session, budget=float("inf"))
                     asked = f", {done['requests']} Jev requests"
                     for error in done["errors"]:
                         print(f"{path}: Jev failed on {error}", file=sys.stderr)
                     failed += bool(done["errors"])
+                if hosted:
+                    problem = _push(conn, session, path, timeout=300.0)
+                    if problem:
+                        print(f"{path}: not pushed ({problem})", file=sys.stderr)
+                        failed += 1
+                    asked += ", pushed" if not problem else ""
         except (OSError, ValueError, sqlite3.Error, jev.JevError) as error:
             print(f"{path}: skipped ({error})", file=sys.stderr)
             failed += 1
@@ -389,7 +473,7 @@ def cmd_index(args) -> int:
 
 
 def cmd_answers(args) -> int:
-    with closing(store.connect(_db(args))) as conn:
+    with closing(store.connect(_with_session(args, _db(args), args.session))) as conn:
         return _answers(args, conn)
 
 
@@ -412,7 +496,7 @@ def _answers(args, conn) -> int:
 
 
 def cmd_context(args) -> int:
-    db = _db(args)
+    db = _with_session(args, _db(args), args.session)
     with closing(store.connect(db)) as conn:
         session = args.session or args.in_session or store.latest_session(conn)
         if not session:
@@ -462,10 +546,15 @@ def cmd_install(args) -> int:
 def cmd_find(args) -> int:
     if not args.words:
         return _fail(args, "Name the words to search for, as in: find webhook retry", 2)
-    with closing(store.connect(_db(args))) as conn:
+    db = _db(args)
+    with closing(store.connect(db)) as conn:
         rows = store.search(conn, args.words, limit=args.limit)
         paras = store.search_paras(conn, args.words, limit=args.limit)
-    if not rows and not paras:
+        here = {row[0] for row in conn.execute("SELECT session_id FROM sessions")}
+    hosted, problem = _hosted_find(args, db.stem, here)
+    if not rows and not paras and not hosted:
+        if problem:
+            print(problem)
         print("No match.")
         return 0 if args.in_session else 1
     for row in rows:
@@ -476,7 +565,37 @@ def cmd_find(args) -> int:
         for row in paras:
             when = (row["started_at"] or "")[:16].replace("T", " ")
             print(f"- {when} · session {row['session_id'][:8]} · after: {preview(row['prompt'], 60, first_line=True)}\n  {row['hit']}")
+    if hosted:
+        print(("\n" if rows or paras else "") + "In the hosted index, from sessions not on this machine:")
+        print("\n".join(hosted))
+    if problem:
+        print(("\n" if rows or paras or hosted else "") + problem)
     return 0
+
+
+def _hosted_find(args, project: str, here: set) -> tuple:
+    """Lines for the hosted index's matches from sessions this index doesn't hold, each
+    with the full session id, as `answers --session` and `context --session` take it;
+    and what went wrong, if anything."""
+    try:
+        if remote.settings() is None:
+            return [], None
+        found = remote.search(args.words, project, limit=args.limit)
+    except remote.RemoteError as error:
+        return [], f"focused: could not search the hosted index ({error})."
+    lines = []
+    for row in found["turns"]:
+        if row.get("session_id") in here or is_own_command(row.get("prompt")):
+            continue
+        when = (row.get("started_at") or "")[:16].replace("T", " ")
+        lines.append(f"- {when} · session {row.get('session_id')} · {row.get('origin')}: {row.get('hit')}")
+    for row in found["paras"]:
+        if row.get("session_id") in here:
+            continue
+        when = (row.get("started_at") or "")[:16].replace("T", " ")
+        lines.append(f"- {when} · session {row.get('session_id')} · after: "
+                     f"{preview(row.get('prompt'), 60, first_line=True)}\n  {row.get('hit')}")
+    return lines, None
 
 
 def main(argv=None) -> int:
