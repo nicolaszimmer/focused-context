@@ -115,6 +115,19 @@ class UpdateTest(unittest.TestCase):
         self.assertIn(str(self.dir / "cache" / second), " ".join(self.commands()))
         self.assertNotIn(str(root) + "/", " ".join(self.commands()))
 
+    def test_a_failed_or_raced_fetch_leaves_nothing_behind(self):
+        with self.assertRaises(update.UpdateError):
+            update.fetch("0" * 40)  # no such commit
+        self.assertEqual(list((self.dir / "cache").iterdir()), [])
+        rename = Path.rename
+
+        def raced(path, target):  # another session renames its checkout in first
+            rename(path, target)
+            raise OSError("exists")
+        with mock.patch.object(Path, "rename", raced):
+            self.assertEqual(update.fetch(self.first), self.dir / "cache" / self.first)
+        self.assertEqual([p.name for p in (self.dir / "cache").iterdir()], [self.first])
+
     def test_a_branch_that_doesnt_exist_or_a_name_that_isnt_plain_is_an_error(self):
         with self.assertRaises(update.UpdateError):
             update.latest("no-such-branch")

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -82,16 +83,19 @@ def fetch(commit: str) -> Path:
         return target
     temporary = cache_dir() / f".{commit}.{os.getpid()}"
     temporary.mkdir(parents=True, exist_ok=True)
-    _git("init", "-q", str(temporary))
-    _git("-C", str(temporary), "fetch", "-q", "--depth", "1", repository(), commit, timeout=120)
-    _git("-C", str(temporary), "-c", "advice.detachedHead=false", "checkout", "-q", "FETCH_HEAD")
-    if not (temporary / "scripts" / "focused.py").exists():
-        raise UpdateError(f"{commit} isn't a focused-context commit")
     try:
-        temporary.rename(target)
-    except OSError:  # another session got there first
-        if not (target / "scripts" / "focused.py").exists():
-            raise
+        _git("init", "-q", str(temporary))
+        _git("-C", str(temporary), "fetch", "-q", "--depth", "1", repository(), commit, timeout=120)
+        _git("-C", str(temporary), "-c", "advice.detachedHead=false", "checkout", "-q", "FETCH_HEAD")
+        if not (temporary / "scripts" / "focused.py").exists():
+            raise UpdateError(f"{commit} isn't a focused-context commit")
+        try:
+            temporary.rename(target)
+        except OSError:  # another session got there first
+            if not (target / "scripts" / "focused.py").exists():
+                raise
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)  # whatever didn't become the checkout
     return target
 
 
