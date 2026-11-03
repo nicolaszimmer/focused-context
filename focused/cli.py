@@ -41,7 +41,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from . import idle, install, jev, recall, remote, store, summary
+from . import idle, install, jev, recall, remote, repos, store, summary
 from . import update as updater
 from .transcript import LISTED, is_own_command
 
@@ -417,10 +417,12 @@ def cmd_hook_prompt(args) -> int:
         prompt, path = payload.get("prompt") or "", payload.get("transcript_path")
         if remote.settings() is None or not recall.typed(prompt) or not path or not recall.first_message(path):
             return 0
-        items = recall.related(prompt, exclude=payload.get("session_id"))
+        # Nothing has been done in the session yet: its repositories are those it starts with.
+        mine = repos.attached(payload.get("cwd") or _here())
+        items = recall.related(prompt, exclude=payload.get("session_id"), mine=mine)
         if items:
             sys.stdout.write(json.dumps({"hookSpecificOutput": {
-                "hookEventName": "UserPromptSubmit", "additionalContext": recall.block(items)}}))
+                "hookEventName": "UserPromptSubmit", "additionalContext": recall.block(items, mine)}}))
     except (remote.RemoteError, jev.JevError) as error:
         _log("recall", str(error))
     except Exception:  # noqa: BLE001 - a hook must never fail the session
@@ -585,40 +587,61 @@ CHOICES = 3
 CHOOSE = "focused: choose a session."
 
 
+def _here() -> str:
+    return os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+
+
+def _mine(conn, session: Optional[str]) -> list:
+    """This session's repositories: those it worked in so far, and those it started with."""
+    held = [r["repo"] for r in store.session_repos(conn, session)] if session else []
+    return held + [repo for repo in repos.attached(_here()) if repo not in held]
+
+
 def _choose(conn, db: Path, current: Optional[str]) -> int:
-    """The project's latest other sessions with a message in them, here and in the hosted
-    index, printed as a choice for the context skill to offer."""
-    rows, problem = _sessions(conn, db)
+    """The latest other sessions with a message in them, here and in the hosted index, those
+    of this session's repositories first, then those of related ones (focused/repos.py),
+    printed as a choice for the context skill to offer."""
+    mine = _mine(conn, current)
+    rows, problem = _sessions(conn, db, mine=mine)
     if problem:
         print(problem + "\n")
     choices = [row for row in rows if row["session_id"] != current and (row.get("messages") or 0) > 0]
     if not choices:
-        print("focused: no other session of this project is indexed, so there is no summary to show.")
+        print(f"focused: no other session of this project{' or of its repositories' if mine else ''} is indexed, "
+              "so there is no summary to show.")
         return 0
+    which = ("The latest sessions, those of this session's repositories first:" if mine
+             else "The project's latest sessions:")
     _print_choice(choices, f"{CHOOSE} Nothing has been said in this one yet, and a new session doesn't "
-                           "always continue the latest, so focused doesn't guess. The project's latest sessions:")
+                           f"always continue the latest, so focused doesn't guess. {which}")
     return 0
 
 
 def _print_choice(rows: list, heading: str) -> None:
-    """Up to CHOICES sessions, newest first, one a line as
-    `n. id | title | when | messages | first message`: what skills/context offers."""
+    """Up to CHOICES sessions, in the order given, one a line as
+    `n. id | title | when | messages | repositories | first message`: what skills/context
+    offers. Repositories are those the session worked in, most used first, or `-`."""
     def plain(text, limit: int) -> str:
         return preview(" ".join(str(text or "").split()).replace("|", "/"), limit)
 
     print(heading)
     for n, row in enumerate(rows[:CHOICES], 1):
         messages = row.get("messages") or 0
+        worked = ", ".join(repos.short(r) for r in (row.get("repos") or [])[:3])
         print(f"{n}. {row['session_id']} | {plain(row.get('title'), 60) if row.get('title') else '(no title)'} | "
               f"{(row.get('last_at') or '')[:16].replace('T', ' ')} | {messages} message{'' if messages == 1 else 's'} | "
-              f"{plain(row.get('first_prompt'), 100)}")
+              f"{plain(worked, 80) if worked else '-'} | {plain(row.get('first_prompt'), 100)}")
 
 
-def _sessions(conn, db: Path, title: Optional[str] = None, any_project: bool = False) -> tuple:
+def _sessions(conn, db: Path, title: Optional[str] = None, any_project: bool = False,
+              mine: Optional[list] = None) -> tuple:
     """This project's sessions, newest first, from this index and the hosted one, each with
-    its title, its number of messages and its first message; and what went wrong reading
-    the hosted one. With `title`, the hosted index sends those whose title has its words;
-    with `any_project`, also its latest sessions of every project, for an id's start."""
+    its title, its number of messages, its first message and the repositories it worked in;
+    and what went wrong reading the hosted one. With `title`, the hosted index sends those
+    whose title has its words; with `any_project`, also its latest sessions of every
+    project, for an id's start. With `mine` (this session's repositories), the hosted
+    index's latest sessions of other projects join those of this one when they worked in
+    one of them or in a related one, and the list goes by that relation first."""
     conn.create_function("is_own_command", 1, is_own_command, deterministic=True)
     listed = ", ".join("?" * len(LISTED))
     question = f"origin IN ({listed}) AND NOT is_own_command(prompt)"
@@ -627,18 +650,31 @@ def _sessions(conn, db: Path, title: Optional[str] = None, any_project: bool = F
         f"(SELECT COUNT(*) FROM turns WHERE session_id = s.session_id AND {question}) AS messages, "
         f"(SELECT prompt FROM turns WHERE session_id = s.session_id AND {question} ORDER BY seq LIMIT 1) AS first_prompt "
         "FROM sessions s ORDER BY s.last_at DESC", (*LISTED, *LISTED))}
+    for session, row in found.items():
+        row["repos"] = [r["repo"] for r in store.session_repos(conn, session, worked=True)]
     problem = None
     try:
         if remote.settings() is not None:
             hosted = remote.sessions(db.stem, limit=50 if title else 20, title=title, timeout=8.0)
             if any_project:
                 hosted += remote.sessions(None, limit=200, timeout=8.0)  # ids are unique
+            elif mine:
+                hosted += [dict(row, elsewhere=True) for row in remote.sessions(None, limit=50, timeout=8.0)
+                           if row.get("project") != db.stem]
             for row in hosted:
                 found.setdefault(str(row.get("session_id")), row)
     except remote.RemoteError as error:
         problem = f"focused: could not list the hosted index's sessions ({error}), so these are only this machine's."
     rows = [row for key, row in found.items() if PLAIN_ID.fullmatch(key)]
+    for row in rows:
+        row["repos"] = [r for r in row.get("repos") or [] if isinstance(r, str)]
     rows.sort(key=lambda row: row.get("last_at") or "", reverse=True)
+    if mine:
+        related = repos.near(mine, (row["repos"] for row in rows))
+        for row in rows:
+            row["relation"] = repos.relation(row["repos"], set(mine), related)
+        rows = [row for row in rows if not row.get("elsewhere") or row["relation"]]
+        rows.sort(key=lambda row: repos.TIER.get(row["relation"], 0), reverse=True)  # newest first within each
     return rows, problem
 
 
@@ -685,10 +721,16 @@ def cmd_recall(args) -> int:
         if remote.settings() is None:
             return _fail(args, "focused: recall needs the hosted index: set FOCUSED_REMOTE_URL and FOCUSED_REMOTE_TOKEN "
                                "(README, \"The hosted index\").", 1)
-        found = remote.recall(" ".join(args.words), exclude=args.in_session, limit=args.limit)
+        try:
+            with closing(store.connect(_db(args))) as conn:
+                mine = _mine(conn, args.in_session)
+        except (OSError, sqlite3.Error):  # the index locked, say: the repositories it starts with
+            mine = repos.attached(_here())
+        found = remote.recall(" ".join(args.words), exclude=args.in_session, limit=args.limit, repos=mine,
+                              min_similarity=recall.ON_DEMAND_MIN)
     except remote.RemoteError as error:
         return _fail(args, f"focused: could not reach the hosted index ({error}).", 1)
-    print(recall.listing(found["items"], found["vectors"]))
+    print(recall.listing(found["items"], found["vectors"], mine))
     return 0
 
 

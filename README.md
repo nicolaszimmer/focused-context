@@ -185,7 +185,10 @@ environment's settings, add its host to the allowed domains, or choose a broader
   short goes on from there next time.
 - **Reading back:** the sessions `/focused-context` offers in a new session include the
   hosted index's, so a new container offers those of earlier containers, and the one
-  chosen is read into this machine's index. `focused answers --session <title>` and
+  chosen is read into this machine's index. They come those of this session's
+  repositories first, then those of related repositories (see "Recall"), and other
+  projects' sessions join them when they worked in one of those.
+  `focused answers --session <title>` and
   `focused context --session <title>` read a session this machine doesn't have the same
   way. `/focused-find` adds the matches from sessions not on this machine.
 - **Retention is each side's own:** a turn deleted here for its age isn't deleted there.
@@ -210,8 +213,17 @@ on what you're doing now (`focused/recall.py`, the Worker's `POST /v1/recall`):
   at most 1,500 characters: up to three earlier parts at a cosine similarity of at least
   0.6 (`FOCUSED_RECALL_MIN`), each with its first answer. Words alone don't add to it,
   since a shared word says little. Commands and wake-ups don't count as a first message.
-- **On demand**, `/focused-recall <what>` lists the best five in full. Claude may use it
-  itself when you refer to earlier work, or before re-deciding something settled before.
+- **On demand**, `/focused-recall <what>` lists the best five in full, by meaning at a
+  similarity of at least 0.4. Claude may use it itself when you refer to earlier work, or
+  before re-deciding something settled before.
+- **The same repositories first** (`focused/repos.py`). Each session links to the
+  repositories it worked in, counted by its transcript entries there: each entry's working
+  directory, and each file or folder a tool was given. Two repositories are related when
+  one session worked in both. Recall puts first the parts of sessions that worked in a
+  repository this session has, then those of sessions in a related repository, then the
+  rest. Relevance still comes first: a part below the similarity floor isn't lifted in by
+  its repository. A repository is named by its `origin`, as `github.com/owner/name`, so
+  it has one name in every container; a folder without a git remote has none.
 - **Jev can sort the candidates**: with `FOCUSED_JEV_RECALL=1` and Jev on, it reads each one
   and the block keeps only those it reads as bearing on your message. It ships switched off,
   as new Jev questions do, and is judged by its output.
@@ -232,8 +244,9 @@ on what you're doing now (`focused/recall.py`, the Worker's `POST /v1/recall`):
 - Tables: `sessions`, with each session's title; `turns`, with full-text search on prompt and final
   answer; `parts` of your messages, with Jev's kinds; `paras`, every paragraph
   Claude wrote, with full-text search; and `pairs`, Jev's answer for each part
-  and paragraph; and `pushed`, the digest of each turn as last pushed to the
-  hosted index.
+  and paragraph; `session_repos`, the repositories each session worked in, by
+  its entries in each; and `pushed`, the digest of each turn as last pushed to
+  the hosted index.
 - Beside the databases: `summaries/<session>.md`, the full summary of each
   session summarized, and `idle/<session>`, the note that a message was stopped
   after an hour without a reply.
@@ -453,6 +466,9 @@ Made on 2026-11-03 by the maintainer:
   ledger is built.
 - focused-context's main is protected on GitHub (a pull request is required; direct and
   force pushes are blocked), since cloud sessions follow it.
+- How sessions relate is a graph of repositories: first the repositories a session works
+  in, then those worked on together with them in another session. Recall and the choice
+  of a session follow it.
 
 Open:
 
@@ -463,7 +479,9 @@ Open:
    characters, set by Claude under Claude Code's 10,000.
 4. Which sessions count as one project: every cloud session with more than one
    repository runs in `/home/user`, so all of them share the project `-home-user`, and
-   the hosted index's "latest session" and search span all of them. Recall spans every
-   project and goes by relevance, which may settle this.
-5. The similarity a part needs to join a first message: 0.6, Claude's guess for bge-m3,
-   to be judged by output once the Worker runs; and whether Jev sorts the candidates.
+   the hosted index's search spans all of them. Recall and the choice of a session now go
+   by repository, which may settle this: whether the project should still matter
+   anywhere (search, naming a session by its title) is open.
+5. The similarity a part needs: 0.6 to join a first message and 0.4 on demand, Claude's
+   guesses for bge-m3, to be judged by output once the Worker runs; and whether Jev sorts
+   the candidates.

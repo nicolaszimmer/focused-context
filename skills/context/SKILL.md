@@ -22,11 +22,12 @@ summarize, shorten or comment on it.
 If the output instead has a line starting with `focused: choose a session.`, focused
 needs the user to choose: either nothing has been said in this session yet, or the name
 the user gave fits several sessions. The numbered lines after it are those sessions, each
-as `n. <id> | <title> | <when> | <messages> | <first message>`. Ask the user which one to
-show with the AskUserQuestion tool: one question, "Which session should I summarize?",
-header "Session", and one option per numbered line, in order. Each option's label is the
-session's title, shortened to five words if longer, and its description is
-`<when> · <messages> · <first message>`. If there is only one numbered line, add a second
+as `n. <id> | <title> | <when> | <messages> | <repositories> | <first message>`. Ask the
+user which one to show with the AskUserQuestion tool: one question, "Which session should I
+summarize?", header "Session", and one option per numbered line, in order. Each option's
+label is the session's title, shortened to five words if longer, and its description is
+`<when> · <messages> · <repositories> · <first message>`, leaving out `<repositories>` and
+its ` · ` when it is `-`. If there is only one numbered line, add a second
 option, labelled "None of these", that shows nothing. The tool adds a field where the user
 can type another session's title. Then run the command again with `--session` and the
 chosen session, single-quoted, and `'--full'` if the user gave it: for a numbered option,

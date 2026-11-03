@@ -70,7 +70,9 @@ class Fixture(unittest.TestCase):
         self.transcript.parent.mkdir(parents=True)
         self.write(SESSION)
         self.env = mock.patch.dict(os.environ, {"FOCUSED_HOME": str(self.dir / "focused"),
-                                                "FOCUSED_RETENTION_DAYS": "30"})
+                                                "FOCUSED_RETENTION_DAYS": "30",
+                                                # not a repository: no test gets this one's
+                                                "CLAUDE_PROJECT_DIR": str(self.dir)})
         self.env.start()
         self.now = datetime(2026, 11, 3, 7, 0, tzinfo=timezone.utc)
         self.connections = []

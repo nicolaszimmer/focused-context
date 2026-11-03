@@ -123,6 +123,8 @@ class FakeWorker:
             held[table] += body.get(table, [])
         held.update(project=body["project"], first_at=body["first_at"], last_at=body["last_at"],
                     title=body.get("title") or held.get("title"))
+        if body.get("repos") is not None:  # named: replaced; not named: kept
+            held["repos"] = body["repos"]
         if not held["turns"]:
             del self.sessions[session]
         return {"turns": len(body.get("turns", [])), "gone": len(body.get("gone", []))}
@@ -134,7 +136,8 @@ class FakeWorker:
                     if t["origin"] in LISTED and not is_own_command(t["prompt"])]
         return {"session_id": session, "project": held["project"], "first_at": held["first_at"],
                 "last_at": held["last_at"], "title": held.get("title"), "turns": len(held["turns"]),
-                "messages": len(messages), "first_prompt": messages[0]["prompt"] if messages else None}
+                "messages": len(messages), "first_prompt": messages[0]["prompt"] if messages else None,
+                "repos": [r["repo"] for r in held.get("repos", []) if r["entries"] > 0]}
 
     def search(self, words, project):
         def matches(*texts):
@@ -380,7 +383,7 @@ class HostedCliTest(RemoteFixture):
             code, out = self.run_cli("--in-session", "s2", "context")
             self.assertEqual(code, 0)
             self.assertIn("focused: choose a session.", out)  # not loaded on a guess
-            self.assertIn("1. s1 | Hooks and answers | 2026-11-03 06:12 | 3 messages | How do hooks work? Second line", out)
+            self.assertIn("1. s1 | Hooks and answers | 2026-11-03 06:12 | 3 messages | - | How do hooks work? Second line", out)
             self.assertNotIn("Summary of session", out)
             code, out = self.run_cli("--in-session", "s2", "context", "--session", "s1")
         self.assertIn("Summary of “Hooks and answers” (s1)", out)

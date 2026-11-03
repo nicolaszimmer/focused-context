@@ -12,7 +12,8 @@ What goes: the rows of the local index (store.py), as the Worker's API takes the
 push carries only the turns whose rows changed since the last push (the `pushed` table
 keeps each turn's digest), in pieces of about PIECE bytes, and names the turns that went
 away locally (`gone`) so they go there too. A turn deleted here by retention is not
-named: each side keeps its own retention.
+named: each side keeps its own retention. Each push also names the repositories the
+session worked in (focused/repos.py), once it has any.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ import urllib.parse
 import urllib.request
 from typing import Optional
 
+from . import repos as repo_names
 from .jev import _context as tls_context
 
 URL_VAR, TOKEN_VAR = "FOCUSED_REMOTE_URL", "FOCUSED_REMOTE_TOKEN"
@@ -168,6 +170,9 @@ def push(conn: sqlite3.Connection, session_id: str, project: str, timeout: float
     changed = [key for key in changed if key not in skipped]
     first_at, last_at, title = (conn.execute("SELECT first_at, last_at, title FROM sessions WHERE session_id = ?",
                                              (session_id,)).fetchone() or (None, None, None))
+    # Named only once there are some: the Worker replaces a session's repositories with those
+    # a push names, and an index rebuilt where the folders are gone would name none.
+    repos = _store_repos(conn, session_id) or None
     pieces, piece, size = [], [], 0
     for key in changed:
         if piece and size + len(encoded[key]) > PIECE:
@@ -180,6 +185,7 @@ def push(conn: sqlite3.Connection, session_id: str, project: str, timeout: float
     for i, keys in enumerate(pieces):
         named_gone = gone if i == 0 else []
         body = {"project": project, "first_at": first_at, "last_at": last_at, "title": title, "gone": named_gone,
+                "repos": repos,
                 **{table: [row for key in keys for row in groups[key][table]] for table in COLUMNS}}
         left = deadline - clock()
         if left < 1:
@@ -190,6 +196,12 @@ def push(conn: sqlite3.Connection, session_id: str, project: str, timeout: float
         done["turns"] += len(keys)
         done["gone"] += len(named_gone)
     return done
+
+
+def _store_repos(conn: sqlite3.Connection, session_id: str) -> list:
+    return [{"repo": repo, "entries": entries} for repo, entries in conn.execute(
+        "SELECT repo, entries FROM session_repos WHERE session_id = ? ORDER BY entries DESC, repo LIMIT 100",
+        (session_id,))]
 
 
 def _record(conn: sqlite3.Connection, session_id: str, digests: dict, gone: list) -> None:
@@ -219,6 +231,11 @@ def fetch(session_id: str, timeout: float = 15.0) -> Optional[dict]:
         data[table] = _rows(data.get(table), table)
         if not all(isinstance(row.get("turn_key"), str) for row in data[table]):
             raise RemoteError(f"the Worker sent {table} without their turn")
+    if "repos" in data:
+        data["repos"] = _rows(data["repos"], "repositories")
+        if not all(isinstance(r.get("repo"), str) and repo_names.NAME.fullmatch(r["repo"])
+                   and isinstance(r.get("entries"), int) and r["entries"] >= 0 for r in data["repos"]):
+            raise RemoteError("the Worker sent repositories that aren't named as focused names them")
     return data
 
 
@@ -239,6 +256,10 @@ def save(conn: sqlite3.Connection, session_id: str, data: dict) -> int:
             conn.executemany(
                 f"INSERT INTO {table} (session_id, {', '.join(columns)}) VALUES (?{', ?' * len(columns)})",
                 [(session_id, *(row.get(column) for column in columns)) for row in rows])
+        if "repos" in data:  # a Worker from before 0.8.0 sends none
+            conn.execute("DELETE FROM session_repos WHERE session_id = ?", (session_id,))
+            conn.executemany("INSERT INTO session_repos (session_id, repo, entries) VALUES (?, ?, ?)",
+                             [(session_id, r["repo"], r["entries"]) for r in data["repos"]])
     groups = _groups(conn, session_id)
     _record(conn, session_id, {key: hashlib.sha256(_encoded(group)).hexdigest() for key, group in groups.items()}, [])
     return len(turns)
@@ -254,17 +275,23 @@ def sessions(project: Optional[str], limit: int = 20, title: Optional[str] = Non
 
 
 def recall(text: str, exclude: Optional[str] = None, project: Optional[str] = None, limit: int = 5,
-           timeout: float = 15.0) -> dict:
+           repos: Optional[list] = None, min_similarity: Optional[float] = None, timeout: float = 15.0) -> dict:
     """The earlier message parts that bear on `text`, best first (POST /v1/recall): each with
-    its session's id and title, time, `similarity` (the cosine, when found by meaning), `via`
-    and up to two `answers`; and `vectors`, whether the Worker searched by meaning."""
-    body = {"text": text[:20_000], "exclude": exclude, "project": project, "limit": limit}
+    its session's id and title, time, `similarity` (the cosine, when found by meaning), `via`,
+    up to two `answers`, the `repos` its session worked in and its `relation` to `repos`
+    ("same", "near" or None); and `vectors`, whether the Worker searched by meaning. Parts
+    found by meaning below `min_similarity` are left out, and the rest come in the order of
+    their relation, then of their relevance."""
+    body = {"text": text[:20_000], "exclude": exclude, "project": project, "limit": limit,
+            "repos": list(repos or [])[:repo_names.LISTED], "min_similarity": min_similarity}
     found = _object(_call("POST", "/v1/recall", _encoded(body), timeout=timeout), "recall results")
     items = _rows(found.get("items"), "recalled parts")
     for item in items:
         if not (isinstance(item.get("session_id"), str) and isinstance(item.get("part"), str)
                 and isinstance(item.get("answers", []), list)):
             raise RemoteError("the Worker sent a recalled part without its session or text")
+        item["repos"] = [r for r in item.get("repos") or [] if isinstance(r, str)]
+        item["relation"] = item.get("relation") if item.get("relation") in ("same", "near") else None
     return {"items": items, "vectors": bool(found.get("vectors"))}
 
 
