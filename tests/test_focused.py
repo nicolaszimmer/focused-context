@@ -159,11 +159,17 @@ class StoreTest(Fixture):
         row = conn.execute("SELECT answer, answer_source FROM turns WHERE turn_key = 'old'").fetchone()
         self.assertEqual(tuple(row), ("The final words.", "stop-hook"))
 
-    def test_a_late_stop_hook_answers_its_own_turn_not_the_latest(self):
+    def test_a_late_stop_hook_leaves_the_turn_that_began_since_alone(self):
         conn = self.index(stop_message="Hooks only add context.")  # u1's answer; 'old' has begun since
+        rows = {r[0]: tuple(r[1:]) for r in conn.execute("SELECT turn_key, answer, answer_source FROM turns")}
+        self.assertEqual(rows["u1"], ("Hooks only add context.", "transcript"))
+        self.assertEqual(rows["old"], (None, None))
+
+    def test_a_stop_message_matching_an_earlier_narration_still_answers_the_latest_turn(self):
+        conn = self.index(stop_message="Looking.")  # u1 said this before its tool calls, not as its answer
         rows = dict(conn.execute("SELECT turn_key, answer FROM turns").fetchall())
         self.assertEqual(rows["u1"], "Hooks only add context.")
-        self.assertIsNone(rows["old"])
+        self.assertEqual(rows["old"], "Looking.")
 
     def test_reindexing_drops_turns_the_transcript_no_longer_splits_off(self):
         conn = self.index()
