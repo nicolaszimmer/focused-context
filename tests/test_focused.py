@@ -382,12 +382,13 @@ class PluginTest(unittest.TestCase):
         market = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())
         hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text())["hooks"]
         self.assertEqual(market["plugins"][0]["name"], plugin["name"])
-        self.assertEqual(set(hooks), {"Stop", "SessionEnd"})
+        self.assertEqual(set(hooks), {"Stop", "SessionEnd", "SessionStart"})
+        self.assertEqual(hooks["SessionStart"][0]["matcher"], "clear|compact")
         for event in hooks.values():
             for hook in event[0]["hooks"]:
                 self.assertIn("${CLAUDE_PLUGIN_ROOT}/scripts/focused.py", hook["command"])
         self.assertTrue((ROOT / "scripts" / "focused.py").exists())
-        for skill in ("answers", "find"):
+        for skill in ("answers", "find", "context"):
             body = (ROOT / "skills" / skill / "SKILL.md").read_text()
             self.assertIn("disable-model-invocation: true", body)
             self.assertIn('--in-session "${CLAUDE_SESSION_ID}"', body)

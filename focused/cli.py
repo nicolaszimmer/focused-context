@@ -1,10 +1,11 @@
 """focused: index Claude Code turns, list each question with its answer, search them.
 
-    focused hook stop|session-end     # as a hook: reads the hook's JSON on stdin
+    focused hook stop|session-end|session-start   # as a hook: reads the hook's JSON on stdin
     focused index <transcript.jsonl>  # index one transcript
     focused index --all [--jev]       # index every transcript under ~/.claude/projects
     focused answers [-n N] [--session ID] [--events] [--full]
     focused find <words>
+    focused context [--session ID] [--full]   # the summary loaded after /clear and compaction
 
 With FOCUSED_JEV=1 and an OpenRouter key, the Stop hook also asks Jev what each part
 of a message does and which paragraphs answer it (focused/jev.py); `answers` then lists
@@ -30,8 +31,9 @@ from collections import Counter
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
-from . import jev, store
+from . import jev, store, summary
 from .transcript import LISTED, is_own_command
 
 
@@ -208,6 +210,75 @@ class _SessionLock:
             self.handle.close()
 
 
+CLEARED = "cleared.json"
+
+
+def _note_cleared(db: Path, session: str) -> None:
+    """The session /clear just ended, for the new session's SessionStart hook."""
+    home = store.home()
+    home.mkdir(parents=True, exist_ok=True, mode=0o700)
+    note = {"db": str(db), "session": session, "at": time.time()}
+    with open(os.open(home / CLEARED, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as handle:
+        json.dump(note, handle)
+
+
+def _cleared(db: Path) -> Optional[str]:
+    try:
+        note = json.loads((store.home() / CLEARED).read_text())
+    except (OSError, ValueError):
+        return None
+    fresh = time.time() - float(note.get("at", 0)) < 300
+    return note.get("session") if fresh and note.get("db") == str(db) else None
+
+
+def _write_private(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as handle:
+        handle.write(text)
+
+
+def cmd_hook_session_start(args) -> int:
+    """After /clear or compaction, print where the session left off; Claude Code adds
+    it to the new context. Only reads the index: SessionStart must be quick. Fails
+    open and prints nothing when there is nothing to say."""
+    try:
+        payload = json.load(sys.stdin)
+        source, current, path = payload.get("source"), payload.get("session_id"), payload.get("transcript_path")
+        if source not in ("clear", "compact") or not path:
+            return 0
+        db = _db(args, path)
+        if source == "clear" and not db.exists():  # nothing was ever indexed for this project
+            return 0
+        with closing(store.connect(db)) as conn:
+            if source == "compact":
+                if os.path.exists(path):
+                    store.index_transcript(conn, path)
+                target = current
+            else:
+                target = _cleared(db) or next((row[0] for row in conn.execute(
+                    "SELECT session_id FROM sessions WHERE session_id IS NOT ? ORDER BY last_at DESC LIMIT 1",
+                    (current,))), None)
+                row = conn.execute("SELECT transcript_path FROM sessions WHERE session_id = ?", (target,)).fetchone()
+                if row and row[0] and os.path.exists(row[0]):
+                    store.index_transcript(conn, row[0])  # its last turns, if the Stop hook hadn't got to them
+            if not target:
+                return 0
+            full_path = store.home() / "summaries" / f"{target}.md"
+            short, full = summary.build(conn, target, str(full_path))
+        if short:
+            _write_private(full_path, full)
+            sys.stdout.write(short)
+    except Exception:  # noqa: BLE001 - a hook must never fail the session
+        _log("hook session-start")
+    return 0
+
+
+def cmd_hook(args) -> int:
+    if args.event == "session-start":
+        return cmd_hook_session_start(args)
+    return cmd_hook_stop(args)
+
+
 def cmd_hook_stop(args) -> int:
     """Fails open: never blocks Claude, never prints to stdout. With Jev on, the Stop
     hook (async) also asks Jev about what it hasn't read yet; SessionEnd doesn't, as its
@@ -215,6 +286,8 @@ def cmd_hook_stop(args) -> int:
     try:
         payload = json.load(sys.stdin)
         path = payload.get("transcript_path")
+        if args.event == "session-end" and payload.get("reason") == "clear" and path and payload.get("session_id"):
+            _note_cleared(_db(args, path), payload["session_id"])
         if path and os.path.exists(path):
             stop_message = payload.get("last_assistant_message")
             with closing(store.connect(_db(args, path))) as conn:
@@ -293,6 +366,20 @@ def _answers(args, conn) -> int:
     return 0
 
 
+def cmd_context(args) -> int:
+    with closing(store.connect(_db(args))) as conn:
+        session = args.session or args.in_session or store.latest_session(conn)
+        if not session:
+            return _fail(args, "No indexed sessions for this project.", 1)
+        full_path = store.home() / "summaries" / f"{session}.md"
+        short, full = summary.build(conn, session, str(full_path))
+    if not short:
+        return _fail(args, f"Session {session} has no messages indexed.", 1)
+    _write_private(full_path, full)
+    print(full if args.full else short)
+    return 0
+
+
 def cmd_find(args) -> int:
     if not args.words:
         return _fail(args, "Name the words to search for, as in: find webhook retry", 2)
@@ -326,8 +413,8 @@ def main(argv=None) -> int:
     hook = sub.add_parser("hook", help="run as a Claude Code hook")
     # Stop runs async after each turn; SessionEnd runs in the foreground on exit or /clear,
     # so a turn whose async run was cut off by the exit is still indexed.
-    hook.add_argument("event", choices=["stop", "session-end"])
-    hook.set_defaults(run=cmd_hook_stop)
+    hook.add_argument("event", choices=["stop", "session-end", "session-start"])
+    hook.set_defaults(run=cmd_hook)
 
     index = sub.add_parser("index", help="index transcripts")
     index.add_argument("paths", nargs="*")
@@ -341,6 +428,11 @@ def main(argv=None) -> int:
     answers.add_argument("--events", action="store_true", help="list the folded wake-ups and their replies")
     answers.add_argument("--full", action="store_true", help="print complete prompts and answers")
     answers.set_defaults(run=cmd_answers)
+
+    context = sub.add_parser("context", help="the summary loaded after /clear and compaction")
+    context.add_argument("--session", help="a session id (default: the latest in this project)")
+    context.add_argument("--full", action="store_true", help="every message, not only what fits the hook's limit")
+    context.set_defaults(run=cmd_context)
 
     find = sub.add_parser("find", help="search prompts and answers")
     find.add_argument("words", nargs="*")
