@@ -1,6 +1,6 @@
 """focused: index Claude Code turns, list each question with its answer, search them.
 
-    focused hook stop|session-end|session-start   # as a hook: reads the hook's JSON on stdin
+    focused hook stop|session-end|session-start|prompt   # as a hook: reads the hook's JSON on stdin
     focused index <transcript.jsonl>  # index one transcript
     focused index --all [--jev]       # index every transcript under ~/.claude/projects
     focused answers [-n N] [--session ID] [--events] [--full]
@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from . import jev, store, summary
+from . import idle, jev, store, summary
 from .transcript import LISTED, is_own_command
 
 
@@ -280,9 +280,25 @@ def cmd_hook_session_start(args) -> int:
     return 0
 
 
+def cmd_hook_prompt(args) -> int:
+    """UserPromptSubmit: after an hour without a reply, stop one typed message, so the
+    person can /clear before the session is sent again without the cache
+    (focused/idle.py). Prints nothing otherwise, as plain stdout would be added to
+    Claude's context. Fails open: an error lets the message through."""
+    try:
+        reason = idle.check(json.load(sys.stdin))
+        if reason:
+            sys.stdout.write(json.dumps({"decision": "block", "reason": reason}))
+    except Exception:  # noqa: BLE001 - a hook must never fail the session
+        _log("hook prompt")
+    return 0
+
+
 def cmd_hook(args) -> int:
     if args.event == "session-start":
         return cmd_hook_session_start(args)
+    if args.event == "prompt":
+        return cmd_hook_prompt(args)
     return cmd_hook_stop(args)
 
 
@@ -427,8 +443,10 @@ def main(argv=None) -> int:
 
     hook = sub.add_parser("hook", help="run as a Claude Code hook")
     # Stop runs async after each turn; SessionEnd runs in the foreground on exit or /clear,
-    # so a turn whose async run was cut off by the exit is still indexed.
-    hook.add_argument("event", choices=["stop", "session-end", "session-start"])
+    # so a turn whose async run was cut off by the exit is still indexed. SessionStart loads
+    # the summary after /clear and compaction; UserPromptSubmit ("prompt") stops one message
+    # after an hour without a reply.
+    hook.add_argument("event", choices=["stop", "session-end", "session-start", "prompt"])
     hook.set_defaults(run=cmd_hook)
 
     index = sub.add_parser("index", help="index transcripts")

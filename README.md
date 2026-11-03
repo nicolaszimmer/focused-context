@@ -102,6 +102,44 @@ detail matters.
 The hook only reads the index, so it adds no Jev requests and stays quick. Without
 Jev, every turn shows as "not read by Jev".
 
+## After an hour without a reply
+
+Claude Code caches the conversation it sends with each request, and in the sessions
+this was built in the cache lasts an hour from its last use. A message sent after
+that sends the whole session again without the cache: in a large session, the most
+expensive message there is. Often `/clear`, with the summary above, is the better
+start.
+
+So the first message you send after 59 minutes without a reply, in a session of at
+least 100,000 tokens, is stopped once by the `UserPromptSubmit` hook. From a run in
+Claude Code 2.1.317, with the wait set to one minute:
+
+```
+UserPromptSubmit operation blocked by hook:
+focused: no reply for 1 min, so this session's prompt cache has most likely expired, and this message would send its 46,857 tokens again without it. Run /clear to start fresh with a summary of where you left off, or send again to continue here.
+
+Original prompt: Reply with just the word two.
+```
+
+- **Send it again** and it goes through. The next stop comes after the next hour
+  without a reply. Claude Code shows the message under "Original prompt" to copy;
+  it doesn't put it back in the input box.
+- **Only messages you type are stopped.** A stopped prompt never reaches Claude, so
+  stopping a turn Claude Code starts itself would lose it, and the hook runs on
+  those too without being told which they are. A background task or subagent
+  finishing, and in a cloud session every wake-up (GitHub events, scheduled
+  check-ins), sends a prompt that starts with `<task-notification>`: any prompt
+  that starts with a tag goes through. A scheduled task (CronCreate, `/loop`) sends
+  its stored prompt, so a prompt the session scheduled goes through, and a session
+  whose loop uses a placeholder prompt (`<<…>>`) is never stopped. All three
+  checked in Claude Code 2.1.317.
+- **Measured from the transcript:** the time since its last reply, and that reply's
+  context (input, cached and output tokens) as the session's size.
+- **Settings:** `FOCUSED_IDLE_MINUTES` changes the 59 (`0` switches the stop off)
+  and `FOCUSED_IDLE_TOKENS` the 100,000.
+- A prompt sent with `claude -p --resume` to a large session idle for an hour is
+  stopped too: the hook can't tell it from a typed one.
+
 ## Storage
 
 - Claude Code already keeps every session as JSONL under
@@ -154,7 +192,7 @@ plugin off everywhere, run `/plugin disable focused@focused-context`.
 
 It brings:
 
-- **Three hooks.**
+- **Four hooks.**
   - `Stop` indexes after each turn, in the background, so the turn never waits
     for it. With Jev on, it asks Jev here too.
   - `SessionEnd` indexes once more when you exit or run `/clear`, in the
@@ -162,6 +200,9 @@ It brings:
     running. Its budget is 1.5 s; a 62 MB transcript takes 0.6 s.
   - `SessionStart`, only after `/clear` and compaction, loads the summary of
     where the session left off (see "After /clear and compaction").
+  - `UserPromptSubmit` stops the first message you type after an hour without a
+    reply, once (see "After an hour without a reply"). It reads only the end of
+    the transcript, and fails open.
 
   None of them fails a turn: errors go to `~/.claude/focused/errors.log`.
 - **Three commands.** `/focused:context [--full]` shows the summary loaded after
@@ -213,8 +254,8 @@ rapid-review-bot carries the setup for its own single-repository cloud sessions:
   machine, into `~/.cache/focused-context/<commit>`, and runs it. Its hooks act
   only when `CLAUDE_CODE_REMOTE=true`, so on a machine with the plugin installed
   they do nothing and the plugin indexes.
-- `.claude/settings.json` runs it as the `Stop`, `SessionEnd` and `SessionStart`
-  hooks, the last after `/clear` and compaction only.
+- `.claude/settings.json` runs it as the `Stop`, `SessionEnd`, `SessionStart` and
+  `UserPromptSubmit` hooks, `SessionStart` after `/clear` and compaction only.
 - `.claude/skills/focused-answers`, `focused-find` and `focused-context` are the
   three commands, as `/focused-answers`, `/focused-find` and `/focused-context`,
   because cloud sessions load a repository's skills but not plugins.
@@ -245,6 +286,8 @@ Made on 2026-11-03 by the maintainer:
   labels for one session; a part can be several kinds; answers are shown at
   P ≥ 0.5; Jev is switched on for the maintainer.
 - Development material lives in focused-context-lab.
+- After an hour without a reply, the first message typed is stopped once, with
+  "run /clear or send again"; at 59 minutes, to err on the side of caution.
 
 Open:
 
@@ -252,3 +295,7 @@ Open:
 2. Whether to add a hosted index for cloud and mobile sessions, and for whom.
 3. Whether other repositories used in cloud sessions get rapid-review-bot's
    setup.
+4. The smallest session the stop applies to: 100,000 tokens, Claude's suggestion,
+   not yet confirmed.
+5. The limit on the summary loaded after `/clear` and compaction: 9,500
+   characters, set by Claude under Claude Code's 10,000.
