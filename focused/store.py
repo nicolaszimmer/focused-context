@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from .transcript import Transcript, parse
+from .transcript import Transcript, is_own_command, parse
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -160,11 +160,15 @@ def index_transcript(conn: sqlite3.Connection, path, stop_message: Optional[str]
                 "commits": json.dumps(turn.commits),
                 "pull_requests": json.dumps(turn.pull_requests),
             })
-        # Rows for turns this read no longer finds (a rule changed how turns split) go.
-        keys = [t.key for t in parsed.turns]
-        conn.execute(
-            f"DELETE FROM turns WHERE session_id = ? AND turn_key NOT IN ({','.join('?' * len(keys))})",
-            (session_id, *keys))
+        if parsed.turns:
+            # Rows for turns this read no longer finds (a rule changed how turns split) go.
+            # A read that finds no turns at all deletes nothing: it is more likely a
+            # transcript that could not be read than a session with no questions.
+            kept = {t.key for t in parsed.turns}
+            stored = [row[0] for row in conn.execute(
+                "SELECT turn_key FROM turns WHERE session_id = ?", (session_id,))]
+            conn.executemany("DELETE FROM turns WHERE session_id = ? AND turn_key = ?",
+                             [(session_id, key) for key in stored if key not in kept])
         if stop_message and parsed.turns:
             # The transcript may not hold the final message yet when Stop fires.
             conn.execute(
@@ -203,12 +207,12 @@ def search(conn: sqlite3.Connection, words: list, limit: int = 10) -> list:
     query = " ".join('"' + w.replace('"', '""') + '"' for w in words if w.strip())
     if not query:
         return []
+    # focused's own commands answer with copies of other answers. The search asks the same
+    # function the list does, so the two can't disagree on which turns those are.
+    conn.create_function("is_own_command", 1, is_own_command, deterministic=True)
     return conn.execute(
         "SELECT t.*, snippet(turns_fts, -1, '[', ']', ' … ', 12) AS hit "
         "FROM turns_fts JOIN turns t ON t.id = turns_fts.rowid "
-        # focused's own commands (transcript.is_own_command) answer with copies of other answers.
-        "WHERE turns_fts MATCH ? AND t.prompt NOT LIKE '/focused:%' "
-        "AND t.prompt NOT IN ('/focused-answers', '/focused-find') "
-        "AND t.prompt NOT LIKE '/focused-answers %' AND t.prompt NOT LIKE '/focused-find %' "
+        "WHERE turns_fts MATCH ? AND NOT is_own_command(t.prompt) "
         "ORDER BY rank LIMIT ?",
         (query, limit)).fetchall()

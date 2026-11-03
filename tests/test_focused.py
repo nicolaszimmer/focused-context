@@ -167,6 +167,26 @@ class StoreTest(Fixture):
         self.assertEqual(self.count(conn, "SELECT count(*) FROM turns WHERE turn_key = 'q1'"), 0)
         self.assertEqual(self.count(conn), 5)
 
+    def test_a_read_that_finds_no_turns_keeps_the_stored_ones(self):
+        conn = self.index()
+        kept = self.transcript.read_text()
+        self.transcript.write_text("")
+        self.index()
+        self.assertEqual(self.count(conn), 5)
+        self.transcript.write_text(kept)
+
+    @unittest.skipUnless(hasattr(sqlite3.Connection, "setlimit"), "setlimit needs Python 3.11")
+    def test_a_session_with_more_turns_than_sqlite_takes_variables_reindexes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = Path(tmp) / "long.jsonl"
+            entries = [user(f"q{n}", f"question {n}", **HUMAN) for n in range(120)]
+            transcript.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+            with closing(store.connect(Path(tmp) / "x.sqlite")) as conn:
+                conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 50)
+                store.index_transcript(conn, transcript, now=self.now)
+                store.index_transcript(conn, transcript, now=self.now)
+                self.assertEqual(self.count(conn), 120)
+
     def test_a_prompt_with_no_text_shows_as_such(self):
         out = cli.format_turns([{"turn_key": "i1", "origin": "human", "parent_key": None, "started_at": None,
                                  "prompt": "", "answer": None, "files": "[]", "commits": "[]", "pull_requests": "[]"}])
@@ -309,8 +329,9 @@ class HeadlessAndCommandTest(unittest.TestCase):
         from focused.transcript import is_own_command
         self.assertTrue(is_own_command("/focused-find sky"))
         self.assertTrue(is_own_command("/focused-answers"))
-        self.assertFalse(is_own_command("/focused-find\tsky"))  # the SQL's '/focused-find %' doesn't match it either
+        self.assertFalse(is_own_command("/focused-find\tsky"))
         self.assertFalse(is_own_command("/focused-review"))
+        self.assertFalse(is_own_command("/FOCUSED-FIND sky"))  # names are case-sensitive, in the search too
 
     def test_find_skips_a_repositorys_copies_of_the_commands_too(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -319,12 +340,16 @@ class HeadlessAndCommandTest(unittest.TestCase):
                                                                        "<command-args>sky</command-args>"})
             other = dict(self.ENTRIES[2], uuid="p7", timestamp="2026-11-03T07:35:00Z",
                          message={"content": "<command-name>/focused-review</command-name>"})
+            shout = dict(self.ENTRIES[2], uuid="p8", timestamp="2026-11-03T07:36:00Z",
+                         message={"content": "<command-name>/FOCUSED-FIND</command-name><command-args>sky</command-args>"})
             entries = self.ENTRIES[:2] + [copy, assistant(text("- the sky is blue")),
-                                          other, assistant(text("sky check done"))]
+                                          other, assistant(text("sky check done")),
+                                          shout, assistant(text("Unknown command, sky"))]
             transcript.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
             with closing(store.connect(Path(tmp) / "x.sqlite")) as conn:
                 store.index_transcript(conn, transcript, now=datetime(2026, 11, 3, tzinfo=timezone.utc))
-                self.assertEqual(sorted(h["turn_key"] for h in store.search(conn, ["sky"])), ["p1", "p7"])
+                # The list keeps /FOCUSED-FIND (names are case-sensitive), so the search does too.
+                self.assertEqual(sorted(h["turn_key"] for h in store.search(conn, ["sky"])), ["p1", "p7", "p8"])
 
     def test_find_skips_the_plugins_own_command_turns(self):
         with tempfile.TemporaryDirectory() as tmp:
