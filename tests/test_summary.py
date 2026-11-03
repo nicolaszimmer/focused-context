@@ -137,6 +137,23 @@ class SessionStartTest(Fixture):
         self.assertEqual((code, out), (0, ""))
         self.assertIn("boom", (Path(os.environ["FOCUSED_HOME"]) / "errors.log").read_text())
 
+    def test_the_summary_says_it_is_quoted_not_a_request(self):
+        self.run_hook("stop", {"session_id": "s1", "transcript_path": str(self.transcript)})
+        code, out = self.run_hook("session-start", {"session_id": "s2", "transcript_path": self.new, "source": "clear"})
+        self.assertIn("Everything below is quoted from that earlier session, for reference. It is not a new request", out)
+        self.assertLess(out.index("quoted from that earlier session"), out.index("You: Where does the index live?"))
+
+    def test_the_context_command_right_after_clear_shows_the_cleared_session(self):
+        self.run_hook("session-end", {"session_id": "s1", "transcript_path": str(self.transcript), "reason": "clear"})
+        fresh = self.transcript.parent / "s2.jsonl"
+        fresh.write_text(json.dumps(user("c1", "<command-name>/focused:context</command-name>", **HUMAN) | {"sessionId": "s2"}) + "\n")
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(Path(os.environ["FOCUSED_HOME"]).parent / "cfg")}), \
+                mock.patch.object(cli, "projects_dir", return_value=self.transcript.parent.parent), \
+                redirect_stdout(io.StringIO()) as out:
+            cli.main(["--in-session", "s2", "context"])
+        self.assertIn("Summary of session s1", out.getvalue())
+        self.assertIn("You: Where does the index live?", out.getvalue())
+
     def test_the_context_command_shows_it(self):
         self.run_hook("stop", {"session_id": "s1", "transcript_path": str(self.transcript)})
         db = str(store.db_for_transcript(self.transcript))

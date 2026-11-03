@@ -231,6 +231,18 @@ def _cleared(db: Path) -> Optional[str]:
     return note.get("session") if fresh and note.get("db") == str(db) else None
 
 
+def _previous_session(conn, db: Path, current: Optional[str]) -> Optional[str]:
+    """The session /clear just ended (its SessionEnd note), else the project's most
+    recent other session, re-read so its last turns are in."""
+    target = _cleared(db) or next((row[0] for row in conn.execute(
+        "SELECT session_id FROM sessions WHERE session_id IS NOT ? ORDER BY last_at DESC LIMIT 1",
+        (current,))), None)
+    row = conn.execute("SELECT transcript_path FROM sessions WHERE session_id = ?", (target,)).fetchone()
+    if row and row[0] and os.path.exists(row[0]):
+        store.index_transcript(conn, row[0])  # its last turns, if the Stop hook hadn't got to them
+    return target
+
+
 def _write_private(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as handle:
@@ -255,12 +267,7 @@ def cmd_hook_session_start(args) -> int:
                     store.index_transcript(conn, path)
                 target = current
             else:
-                target = _cleared(db) or next((row[0] for row in conn.execute(
-                    "SELECT session_id FROM sessions WHERE session_id IS NOT ? ORDER BY last_at DESC LIMIT 1",
-                    (current,))), None)
-                row = conn.execute("SELECT transcript_path FROM sessions WHERE session_id = ?", (target,)).fetchone()
-                if row and row[0] and os.path.exists(row[0]):
-                    store.index_transcript(conn, row[0])  # its last turns, if the Stop hook hadn't got to them
+                target = _previous_session(conn, db, current)
             if not target:
                 return 0
             full_path = store.home() / "summaries" / f"{target}.md"
@@ -367,12 +374,20 @@ def _answers(args, conn) -> int:
 
 
 def cmd_context(args) -> int:
-    with closing(store.connect(_db(args))) as conn:
+    db = _db(args)
+    with closing(store.connect(db)) as conn:
         session = args.session or args.in_session or store.latest_session(conn)
         if not session:
             return _fail(args, "No indexed sessions for this project.", 1)
         full_path = store.home() / "summaries" / f"{session}.md"
         short, full = summary.build(conn, session, str(full_path))
+        if not short and args.in_session and not args.session:
+            # Right after /clear the session holds only this command: show the one cleared,
+            # as the SessionStart hook did.
+            session = _previous_session(conn, db, args.in_session)
+            if session:
+                full_path = store.home() / "summaries" / f"{session}.md"
+                short, full = summary.build(conn, session, str(full_path))
     if not short:
         return _fail(args, f"Session {session} has no messages indexed.", 1)
     _write_private(full_path, full)
