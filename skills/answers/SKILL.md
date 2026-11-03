@@ -1,5 +1,5 @@
 ---
-description: List this session's questions, each with Claude's final answer and the wake-ups filed under it.
+description: List this session's messages, each part with the paragraphs that answer it (or Claude's final text where Jev hasn't read the turn), and the wake-ups filed under it.
 argument-hint: "[-n N] [--events] [--full]"
 disable-model-invocation: true
 allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/focused.py" *)

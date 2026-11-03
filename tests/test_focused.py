@@ -202,7 +202,7 @@ class StoreTest(Fixture):
     def test_a_prompt_with_no_text_shows_as_such(self):
         out = cli.format_turns([{"turn_key": "i1", "origin": "human", "parent_key": None, "started_at": None,
                                  "prompt": "", "answer": None, "files": "[]", "commits": "[]", "pull_requests": "[]"}])
-        self.assertIn("Q: (no text)", out)
+        self.assertIn("You: (no text)", out)
 
     def test_search(self):
         conn = self.index()
@@ -247,8 +247,8 @@ class CliTest(Fixture):
         with redirect_stderr(err):
             code, out = self.run_cli("index", str(bad), str(missing), str(self.transcript))
         self.assertEqual(code, 1)
-        self.assertIn("bad.jsonl: 1 questions", out)  # the cut-off character no longer stops the read
-        self.assertIn("s1.jsonl: 3 questions", out)
+        self.assertIn("bad.jsonl: 1 message,", out)  # the cut-off character no longer stops the read
+        self.assertIn("s1.jsonl: 3 messages, 2 other turns", out)
         self.assertIn("missing.jsonl: skipped", err.getvalue())
 
     def run_cli(self, *args, stdin=None):
@@ -278,7 +278,7 @@ class CliTest(Fixture):
         self.assertIn("A: Hooks only add context.", out)
         self.assertIn("+2 events: 1 task-notification, 1 meta", out)
         self.assertIn("-> No action needed.", out)
-        self.assertIn("Q: (sent while Claude was working) also this", out)  # the image prompt has no text
+        self.assertIn("You: (sent while Claude was working) also this", out)  # the image prompt has no text
         self.assertIn("origin unknown", out)
         self.assertIn("How do hooks work? [...]", out)
 
@@ -332,10 +332,10 @@ class HeadlessAndCommandTest(unittest.TestCase):
         rows.append(dict(rows[1], turn_key="p4", prompt="/focused-answers -n 2", answer="copy"))  # a repository's copy
         rows.append(dict(rows[1], turn_key="p6", prompt="/focused-review", answer="someone else's command"))
         out = format_turns(rows)
-        self.assertIn("Q: Reply with exactly: the sky is blue", out)
+        self.assertIn("You: Reply with exactly: the sky is blue", out)
         self.assertNotIn("/focused:answers", out)
         self.assertNotIn("/focused-answers", out)
-        self.assertIn("Q: /focused-review", out)  # only focused's own names are left out
+        self.assertIn("You: /focused-review", out)  # only focused's own names are left out
 
     def test_the_list_and_the_search_agree_on_what_is_focuseds_own(self):
         from focused.transcript import is_own_command
@@ -369,7 +369,7 @@ class HeadlessAndCommandTest(unittest.TestCase):
     def test_find_skips_the_plugins_own_command_turns(self):
         with tempfile.TemporaryDirectory() as tmp:
             transcript = Path(tmp) / "s9.jsonl"
-            entries = self.ENTRIES[:-1] + [assistant(text("Q: Reply ... A: the sky is blue"))]
+            entries = self.ENTRIES[:-1] + [assistant(text("You: Reply ... A: the sky is blue"))]
             transcript.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
             with closing(store.connect(Path(tmp) / "x.sqlite")) as conn:
                 store.index_transcript(conn, transcript, now=datetime(2026, 11, 3, tzinfo=timezone.utc))
