@@ -3,10 +3,12 @@
 import io
 import json
 import os
+import sqlite3
 import sys
 import time
 import unittest
 from contextlib import closing, redirect_stdout
+from datetime import timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -171,6 +173,80 @@ class SessionStartTest(Fixture):
         with redirect_stdout(io.StringIO()) as out:
             cli.main(["--db", db, "context"])
         self.assertIn("# Where we left off", out.getvalue())
+
+    def test_a_full_summary_too_long_for_the_bash_tool_is_pointed_at(self):
+        self.run_hook("stop", {"session_id": "s1", "transcript_path": str(self.transcript)})
+        db = str(store.db_for_transcript(self.transcript))
+        full = Path(os.environ["FOCUSED_HOME"]) / "summaries" / "s1.md"
+        with redirect_stdout(io.StringIO()) as out:
+            cli.main(["--db", db, "context", "--full"])
+        self.assertIn("# Where we left off", out.getvalue())  # short enough: printed
+        with mock.patch.object(cli, "FULL_PRINTED", 100), redirect_stdout(io.StringIO()) as out:
+            cli.main(["--db", db, "context", "--full"])
+        self.assertNotIn("# Where we left off", out.getvalue())
+        self.assertIn(f"It is in this file: {full}", out.getvalue())
+        self.assertIn("# Where we left off", full.read_text())
+
+    def test_a_session_id_that_is_not_a_plain_name_writes_no_summary(self):
+        self.run_hook("stop", {"session_id": "s1", "transcript_path": str(self.transcript)})
+        db = str(store.db_for_transcript(self.transcript))
+        home = Path(os.environ["FOCUSED_HOME"])
+        for bad in ("../escaped", "a/b", ".hidden"):
+            with redirect_stdout(io.StringIO()) as out:
+                code = cli.main(["--db", db, "context", "--session", bad])
+            self.assertEqual(code, 2, bad)
+        self.assertFalse((home / "escaped.md").exists())
+        self.assertFalse((home / "summaries" / "a").exists())
+        with self.assertRaises(ValueError):
+            cli._summary_file("../escaped")
+        self.assertEqual(cli._summary_file("s1"), home / "summaries" / "s1.md")
+
+    def test_the_context_command_names_this_session_when_there_is_no_other(self):
+        fresh = self.transcript.parent / "s2.jsonl"
+        fresh.write_text(json.dumps(user("c1", "<command-name>/focused:context</command-name>", **HUMAN) | {"sessionId": "s2"}) + "\n")
+        self.transcript.unlink()
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(Path(os.environ["FOCUSED_HOME"]).parent / "cfg")}), \
+                mock.patch.object(cli, "projects_dir", return_value=self.transcript.parent.parent), \
+                redirect_stdout(io.StringIO()) as out:
+            cli.main(["--in-session", "s2", "context"])
+        self.assertIn("Session s2 has no messages indexed.", out.getvalue())
+
+    def test_a_failed_reread_still_loads_the_summary_from_the_index(self):
+        self.run_hook("stop", {"session_id": "s1", "transcript_path": str(self.transcript)})
+        with mock.patch.object(cli.store, "index_transcript", side_effect=sqlite3.OperationalError("database is locked")):
+            code, out = self.run_hook("session-start", {"session_id": "s1", "transcript_path": str(self.transcript),
+                                                        "source": "compact"})
+            self.assertIn("You: Where does the index live?", out)
+            code, out = self.run_hook("session-start", {"session_id": "s2", "transcript_path": self.new, "source": "clear"})
+            self.assertIn("You: Where does the index live?", out)
+        self.assertIn("database is locked", (Path(os.environ["FOCUSED_HOME"]) / "errors.log").read_text())
+
+
+class RetentionTest(Fixture):
+    def test_a_pruned_session_takes_its_summary_and_note_along(self):
+        home = Path(os.environ["FOCUSED_HOME"])
+        for folder, name in (("summaries", "s1.md"), ("summaries", "other.md"), ("idle", "s1"), ("idle", "other")):
+            (home / folder).mkdir(parents=True, exist_ok=True)
+            (home / folder / name).write_text("kept until pruned")
+        self.index()  # every turn is from 2026-11-03, within 30 days of self.now
+        self.assertTrue((home / "summaries" / "s1.md").exists())
+        self.now = self.now + timedelta(days=40)
+        written = self.now.timestamp()  # "just now" on the test's clock
+        os.utime(home / "summaries" / "other.md", (written, written))
+        self.index()
+        self.assertFalse((home / "summaries" / "s1.md").exists())
+        self.assertFalse((home / "idle" / "s1").exists())
+        self.assertTrue((home / "summaries" / "other.md").exists())  # another session, written just now
+
+    def test_a_file_not_rewritten_within_the_period_goes(self):
+        home = Path(os.environ["FOCUSED_HOME"])
+        (home / "summaries").mkdir(parents=True)
+        stale = home / "summaries" / "elsewhere.md"
+        stale.write_text("from a project never indexed again")
+        old = (self.now - timedelta(days=40)).timestamp()  # on the index's clock, like the cutoff
+        os.utime(stale, (old, old))
+        self.index()
+        self.assertFalse(stale.exists())
 
 
 if __name__ == "__main__":

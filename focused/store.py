@@ -300,13 +300,40 @@ def _drop_orphans(conn: sqlite3.Connection) -> None:
 
 
 def prune(conn: sqlite3.Connection, now: Optional[datetime] = None) -> int:
+    """Delete turns older than the retention period, with what was built from them: their
+    parts, paragraphs and Jev's answers, and the saved summary of a session left with no
+    turns (summaries/<session>.md, and its note in idle/). A summary or note not rewritten
+    within the period goes too, even if its project's index is never opened again."""
     cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=retention_days())
     stamp = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
     removed = conn.execute("DELETE FROM turns WHERE started_at < ?", (stamp,)).rowcount
+    gone = [row[0] for row in conn.execute(
+        "SELECT session_id FROM sessions WHERE session_id NOT IN (SELECT DISTINCT session_id FROM turns)")]
     conn.execute("DELETE FROM sessions WHERE session_id NOT IN (SELECT DISTINCT session_id FROM turns)")
     if removed:
         _drop_orphans(conn)
+    _prune_files(gone, cutoff.timestamp())
     return removed
+
+
+SAVED = (("summaries", ".md"), ("idle", ""))  # files kept per session beside the index
+
+
+def _prune_files(sessions: list, cutoff: float) -> None:
+    for folder, suffix in SAVED:
+        directory = home() / folder
+        doomed = {directory / f"{session}{suffix}" for session in sessions
+                  if session and Path(f"{session}{suffix}").name == f"{session}{suffix}"}
+        try:
+            doomed.update(directory.iterdir() if directory.is_dir() else ())
+        except OSError:
+            pass
+        for path in doomed:
+            try:
+                if path.stem in sessions or path.stat().st_mtime < cutoff:
+                    path.unlink()
+            except OSError:
+                pass
 
 
 def ask_jev(conn: sqlite3.Connection, session_id: str, ask: jev.Ask = jev.http_ask,
