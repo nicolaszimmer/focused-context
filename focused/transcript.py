@@ -43,6 +43,14 @@ HUMAN = "human"
 UNKNOWN = "unknown"
 SDK = "sdk"
 LISTED = (HUMAN, UNKNOWN, SDK)  # turns a person may have started
+# focused's own commands: the plugin's /focused:answers and /focused:find, and the copies a
+# repository can carry for cloud sessions, /focused-answers and /focused-find. Their answers
+# are copies of other answers, so lists and searches leave them out.
+OWN_COMMANDS = ("/focused:", "/focused-")
+
+
+def is_own_command(prompt) -> bool:
+    return (prompt or "").startswith(OWN_COMMANDS)
 COMMAND_NAME = re.compile(r"<command-name>\s*(.*?)\s*</command-name>", re.S)
 COMMAND_ARGS = re.compile(r"<command-args>\s*(.*?)\s*</command-args>", re.S)
 

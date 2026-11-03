@@ -273,9 +273,22 @@ class HeadlessAndCommandTest(unittest.TestCase):
         rows = [{"turn_key": t.key, "origin": t.origin, "parent_key": t.parent_key, "started_at": t.started_at,
                  "prompt": t.prompt, "answer": t.answer, "files": "[]", "commits": "[]", "pull_requests": "[]"}
                 for t in parse_entries(self.ENTRIES).turns]
+        rows.append(dict(rows[1], turn_key="p4", prompt="/focused-answers", answer="copy"))  # a repository's copy
         out = format_turns(rows)
         self.assertIn("Q: Reply with exactly: the sky is blue", out)
         self.assertNotIn("/focused:answers", out)
+        self.assertNotIn("/focused-answers", out)
+
+    def test_find_skips_a_repositorys_copies_of_the_commands_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = Path(tmp) / "s9.jsonl"
+            copy = dict(self.ENTRIES[2], uuid="p5", message={"content": "<command-name>/focused-find</command-name>\n"
+                                                                       "<command-args>sky</command-args>"})
+            entries = self.ENTRIES[:2] + [copy, assistant(text("- the sky is blue"))]
+            transcript.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+            with closing(store.connect(Path(tmp) / "x.sqlite")) as conn:
+                store.index_transcript(conn, transcript, now=datetime(2026, 11, 3, tzinfo=timezone.utc))
+                self.assertEqual([h["turn_key"] for h in store.search(conn, ["sky"])], ["p1"])
 
     def test_find_skips_the_plugins_own_command_turns(self):
         with tempfile.TemporaryDirectory() as tmp:

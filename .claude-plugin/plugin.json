@@ -1,7 +1,7 @@
 {
   "name": "focused",
   "displayName": "Focused context",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Indexes each turn of a session: your question, Claude's final answer, and the wake-ups filed under it. /focused:answers lists them, /focused:find searches them. The index stays on this machine, in ~/.claude/focused.",
   "author": { "name": "nicolaszimmer" },
   "repository": "https://github.com/nicolaszimmer/focused-context",

@@ -162,7 +162,10 @@ on the `PATH` as `python3`, standard library only):
 ```
 
 On older versions: `/plugin marketplace add nicolaszimmer/focused-context`,
-then `/plugin install focused@focused-context`.
+then `/plugin install focused@focused-context`. If the one-step form says the
+plugin is "not found in any marketplace", use the two steps: an older Claude
+Code ignores `--marketplace`. If adding the marketplace fails, your git can't
+read the repository: it has to be public, or your git needs GitHub credentials.
 
 **Installed for your user, the plugin indexes every project on that machine.**
 What it stores per turn is your prompt, Claude's final answer, the paths of
@@ -190,7 +193,8 @@ It brings:
 - **Two commands.** `/focused:answers [-n N] [--events] [--full]` lists this
   session's questions with their answers; `/focused:find <words>` searches every
   question and answer in this project. Each reindexes the session first, and
-  leaves out the plugin's own `/focused:` commands. Claude runs them through the
+  leaves out focused's own commands (`/focused:…`, and a repository's
+  `/focused-…` copies, below). Claude runs them through the
   Bash tool, passing each of your words as its own single-quoted argument, with
   a `'` inside a word written as `'\''`. The quoting is Claude's, under Claude
   Code's normal permission checks, which check each part of a compound command:
@@ -222,8 +226,27 @@ From the settings, plugin and cloud-session docs (code.claude.com/docs, read
 | Surface | Does indexing run? | Does the index persist? |
 |---|---|---|
 | Terminal, VS Code and JetBrains extensions, desktop app (local) | Yes, with the plugin installed for your user | Yes, in `~/.claude/focused/` |
-| Cloud session with one repository | Not through the plugin: cloud sessions install neither the plugins in your user settings nor those a repository declares. Only hooks in that repository's committed `.claude/settings.json` run, calling `python3 <path>/scripts/focused.py hook stop` from a clone or an install made by the environment's setup script | No. The VM is reclaimed after inactivity. The conversation is restored on reopen, so the index can be rebuilt (not yet verified that the transcript file is restored at the same path) |
+| Cloud session with one repository | Not through the plugin: cloud sessions install neither the plugins in your user settings nor those a repository declares. Only hooks in that repository's committed `.claude/settings.json` run; see "Cloud sessions" below | No. The VM is reclaimed after inactivity. The conversation is restored on reopen, so the index can be rebuilt (not yet verified that the transcript file is restored at the same path) |
 | Cloud session with several repositories, or a thread in a project | No. Repository hooks are not read there | No. The command still works when run by hand |
+
+### Cloud sessions
+
+rapid-review-bot carries the setup for its own single-repository cloud sessions:
+
+- `.claude/hooks/focused.sh` fetches focused-context at a pinned commit, once per
+  machine, into `~/.cache/focused-context/<commit>`, and runs it. Its hooks act
+  only when `CLAUDE_CODE_REMOTE=true`, so on a machine with the plugin installed
+  they do nothing and the plugin indexes.
+- `.claude/settings.json` runs it as the `Stop` and `SessionEnd` hooks.
+- `.claude/skills/focused-answers` and `focused-find` are the two commands, as
+  `/focused-answers` and `/focused-find`, because cloud sessions load a
+  repository's skills but not plugins.
+
+A cloud session can fetch focused-context only while it is public: a private
+repository is readable only when it is attached to the session, and a session
+with several repositories reads no repository's hooks. Until then the hooks
+log the failure to `~/.claude/focused/errors.log` and do nothing. To take a
+newer focused, change the commit pinned in `focused.sh`.
 
 A prompt sent with `claude -p` or through the SDK is recorded with
 `turnOrigin: "sdk"`; `answers` lists it marked "via SDK".
@@ -281,6 +304,9 @@ Made on 2026-11-03:
 - Try step 3 with Jev, with a self-hosted model as a possible replacement
   later.
 - Ship it as a plugin, with the index kept in `~/.claude/focused/`.
+- Index rapid-review-bot's cloud sessions with a repository hook, and make
+  focused-context public so those sessions can fetch it (the visibility change
+  is the maintainer's to make on GitHub).
 
 Open:
 
@@ -292,5 +318,5 @@ Open:
    for the index.
 4. Whether to add a hosted index for cloud and mobile sessions (see "A hosted
    index"), and if so, for you alone or for others.
-5. Whether to add the hook to the `.claude/settings.json` of the repositories
-   you use in cloud sessions.
+5. Whether other repositories you use in cloud sessions get the same setup as
+   rapid-review-bot.
