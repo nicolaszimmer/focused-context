@@ -56,6 +56,7 @@ planned
 |---|---|---|---|
 | **Capture** | The hooks index each turn: the person's message split into its parts, every paragraph Claude wrote, wake-ups filed under the message they follow, files, commits and PRs. | `focused/transcript.py`, `parts.py`, `store.py`; hooks in `hooks/hooks.json` | Built (0.1–0.3) |
 | **Install** | Puts the hooks and the three commands into every session of a cloud environment from its setup script; locally, the plugin does it. | `scripts/install-cloud.sh`, `focused/install.py` | Built (0.5) |
+| **Updates** | The setup script runs about once a week, so a `SessionStart` hook checks focused-context's main as each session starts and installs a newer version itself: a merge to main is a release. | `focused/update.py` | Built, in review (#8) |
 | **Extraction** | Jev, TypeSafe's decision model through OpenRouter, reads each turn at indexing time: what each part of a message does, and which paragraphs answer it. Answers are kept with a digest of the question's wording. | `focused/jev.py` | Built (0.3), on for the maintainer |
 | **Local index** | One SQLite database per project, readable by its owner only, pruned after 30 days. | `focused/store.py` | Built |
 | **Restore** | After `/clear` and compaction, the `SessionStart` hook loads a summary of the session: decisions, open asks, files and PRs, and the latest messages with their answers, under 9,500 characters. The whole summary is kept in a file. | `focused/summary.py` | Built (0.4) |
@@ -119,7 +120,8 @@ Made by the maintainer on 2026-11-03:
   switched on for the maintainer.
 - A summary loaded automatically after `/clear` and compaction.
 - After an hour without a reply, the first typed message is stopped once, at 59 minutes.
-- Cloud sessions get focused from the environment's setup script.
+- Cloud sessions get focused from the environment's setup script, and follow
+  focused-context's main: a merge to main is a release.
 - The index and ledger are hosted on the maintainer's Cloudflare account, in a new
   repository; the new Jev questions ship switched off and are judged by their output.
 - `/focused-context` in a new session offers a choice of sessions instead of loading the
