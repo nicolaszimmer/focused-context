@@ -33,6 +33,7 @@ class FakeWorker:
         self.sessions: dict = {}
         self.requests: list = []
         self.fail: list = []  # statuses to answer the next requests with
+        self.redirect = None  # a URL to send every request on to
         worker = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -56,7 +57,13 @@ class FakeWorker:
             def handle_any(self, method):
                 length = int(self.headers.get("content-length") or 0)
                 body = self.rfile.read(length) if length else b""
-                worker.requests.append((method, self.path, len(body)))
+                worker.requests.append((method, self.path, len(body), self.headers.get("authorization")))
+                if worker.redirect:
+                    self.send_response(302)
+                    self.send_header("location", worker.redirect + self.path)
+                    self.send_header("content-length", "0")
+                    self.end_headers()
+                    return
                 if self.headers.get("authorization") != f"Bearer {TOKEN}":
                     return self.reply(401, {"error": "unauthorized"})
                 if worker.fail:
@@ -220,6 +227,20 @@ class PushTest(RemoteFixture):
             self.assertEqual((done["skipped"], done["turns"]), ([largest], 4))
             self.assertEqual(remote.push(conn, "s1", "-work-repo")["requests"], 0)
         self.assertNotIn(largest, [t["turn_key"] for t in self.worker.rows("s1")["turns"]])
+
+    def test_a_redirect_is_not_followed_so_the_token_goes_nowhere_else(self):
+        conn = self.index()
+        elsewhere = FakeWorker()
+        self.addCleanup(elsewhere.close)
+        self.worker.redirect = elsewhere.url  # plain http, on another port: another origin
+        for attempt in (lambda: remote.fetch("s1"), lambda: remote.sessions("-work-repo"),
+                        lambda: remote.search(["hooks"], None), lambda: remote.push(conn, "s1", "-work-repo")):
+            with self.assertRaises(remote.RemoteError) as caught:
+                attempt()
+            self.assertEqual(caught.exception.status, 302)
+        self.assertIn("isn't followed", str(caught.exception))
+        self.assertEqual(elsewhere.requests, [])
+        self.assertEqual(conn.execute("SELECT count(*) FROM pushed").fetchone()[0], 0)
 
     def test_without_the_token_nothing_is_read_or_written(self):
         conn = self.index()

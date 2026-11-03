@@ -66,6 +66,16 @@ def settings() -> Optional[tuple]:
     return url, token
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """urllib would follow a redirect with the token attached, to any host and over plain
+    http too, so none is followed."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        fp.close()
+        raise RemoteError(f"HTTP {code}: the Worker redirected to {newurl}, which isn't followed, "
+                          f"as it would carry the token; set {URL_VAR} to where it points", code)
+
+
 def _call(method: str, path: str, body: Optional[bytes] = None, timeout: float = 15.0):
     """One request to the Worker; its JSON, or RemoteError (with the status, if any)."""
     config = settings()
@@ -77,8 +87,9 @@ def _call(method: str, path: str, body: Optional[bytes] = None, timeout: float =
     if body is not None:
         headers["content-type"] = "application/json"
     request = urllib.request.Request(url + path, data=body, method=method, headers=headers)
+    opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=tls_context()), _NoRedirect())
     try:
-        with urllib.request.urlopen(request, timeout=timeout, context=tls_context()) as response:
+        with opener.open(request, timeout=timeout) as response:
             return json.loads(response.read())
     except urllib.error.HTTPError as error:
         try:
