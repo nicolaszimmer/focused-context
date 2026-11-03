@@ -84,16 +84,29 @@ class InstallTest(unittest.TestCase):
         self.assertFalse((self.skills / "focused-context").exists())
 
     def test_broken_settings_and_foreign_skills_are_left_alone(self):
-        self.settings.write_text("{ not json")
-        with self.assertRaises(ValueError):
-            self.run_install()
-        self.assertEqual(self.settings.read_text(), "{ not json")
+        for broken in ("{ not json", '{"hooks": ["not", "an", "object"]}', '{"env": "x"}'):
+            self.settings.write_text(broken)
+            with self.assertRaises(ValueError):
+                self.run_install()
+            self.assertEqual(self.settings.read_text(), broken)
         self.settings.write_text("{}")
         (self.skills / "focused-find").mkdir(parents=True)
         (self.skills / "focused-find" / "SKILL.md").write_text("someone else's")
         with self.assertRaises(ValueError):
             self.run_install()
         self.assertEqual((self.skills / "focused-find" / "SKILL.md").read_text(), "someone else's")
+        # Refused before anything was written: no hooks, no mark, no other commands.
+        self.assertEqual(self.settings.read_text(), "{}")
+        self.assertFalse((self.skills / "focused-answers").exists())
+
+    def test_a_checkout_path_the_shell_would_read_is_refused(self):
+        for name in ("a$HOME", "a`id`", 'a"b', "a\\b", "a b"):
+            odd = self.dir / name
+            (odd / "scripts").mkdir(parents=True)
+            (odd / "scripts" / "focused.py").write_text("")
+            with self.assertRaises(ValueError, msg=name):
+                install.install(odd, settings_path=self.settings, skills_dir=self.skills)
+        self.assertFalse(self.settings.exists())
 
     def test_the_installed_hooks_run_as_claude_code_would_run_them(self):
         """Each installed command, run through sh with a hook payload: the Stop hook

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Optional
@@ -34,6 +35,9 @@ MARK = "# focused-install"
 SKILLS = ("answers", "find", "context")
 SKILL_MARK = ".focused-install"
 ENV_MARK = ("FOCUSED_INSTALL", "environment")
+# The checkout path goes into shell commands and skills between double quotes, so it may
+# hold only characters that mean nothing to the shell there: no $, `, \ or ", no spaces.
+SAFE_PATH = re.compile(r"[A-Za-z0-9_./+@%=:,-]+")
 
 
 def config_dir() -> Path:
@@ -97,6 +101,9 @@ def _read(path: Path) -> dict:
         raise ValueError(f"{path} isn't valid JSON, so it was left as it is: {error}") from None
     if not isinstance(settings, dict):
         raise ValueError(f"{path} doesn't hold a JSON object, so it was left as it is")
+    for key in ("hooks", "env"):
+        if settings.get(key) is not None and not isinstance(settings[key], dict):
+            raise ValueError(f"{path} has a \"{key}\" value that isn't an object, so it was left as it is")
     return settings
 
 
@@ -121,12 +128,21 @@ def install(root: Optional[Path] = None, jev: bool = False, settings_path: Optio
             skills_dir: Optional[Path] = None) -> list:
     """Install the hooks, skills and mark; returns what was done, line by line."""
     root = Path(root or package_root()).resolve()
-    if '"' in str(root) or not (root / "scripts" / "focused.py").exists():
+    if not SAFE_PATH.fullmatch(str(root)):
+        raise ValueError(f"{root} holds characters the shell would read, so no hooks point at it")
+    if not (root / "scripts" / "focused.py").exists():
         raise ValueError(f"{root} isn't a focused-context checkout this can point hooks at")
     settings_path = settings_path or config_dir() / "settings.json"
     skills_dir = skills_dir or config_dir() / "skills"
 
+    # Everything that can refuse is checked before anything is written.
     settings = _read(settings_path)
+    for name in SKILLS:
+        folder = skills_dir / f"focused-{name}"
+        if folder.exists() and not (folder / SKILL_MARK).exists():
+            raise ValueError(f"{folder} exists and isn't focused's, so nothing was installed")
+    skills = {name: _skill(root, name) for name in SKILLS}
+
     hooks = _without_ours(settings.get("hooks") or {})
     for event, groups in _hooks(root, jev).items():
         hooks[event] = hooks.get(event, []) + groups
@@ -134,12 +150,10 @@ def install(root: Optional[Path] = None, jev: bool = False, settings_path: Optio
     settings["env"] = dict(settings.get("env") or {}, **{ENV_MARK[0]: ENV_MARK[1]})
     _write(settings_path, settings)
 
-    for name in SKILLS:
+    for name, text in skills.items():
         folder = skills_dir / f"focused-{name}"
-        if folder.exists() and not (folder / SKILL_MARK).exists():
-            raise ValueError(f"{folder} exists and isn't focused's, so it was left as it is")
         folder.mkdir(parents=True, exist_ok=True)
-        (folder / "SKILL.md").write_text(_skill(root, name))
+        (folder / "SKILL.md").write_text(text)
         (folder / SKILL_MARK).write_text(str(root) + "\n")
     return [f"hooks in {settings_path}: Stop{' with Jev' if jev else ''}, SessionEnd, "
             "SessionStart (clear|compact), UserPromptSubmit",
