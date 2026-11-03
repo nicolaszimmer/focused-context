@@ -74,6 +74,17 @@ class SummaryTest(Fixture):
         self.assertIn("keep option 39", short)  # the newest decision stays
         self.assertEqual(full.count("Decided: keep option"), 40 * 2)  # in Decisions and in Messages
 
+    def test_at_the_smallest_limit_nothing_is_cut_off_mid_text(self):
+        conn = self.session(30)
+        for cap in (summary.MINIMUM, 2_500, 4_000):
+            short, _ = summary.build(conn, "s1", "/tmp/a/rather/long/path/to/the/full/summary.md", cap=cap)
+            self.assertLessEqual(len(short), cap, cap)
+            self.assertTrue(short.endswith("\n"), cap)
+            self.assertIn("/tmp/a/rather/long/path/to/the/full/summary.md", short)
+            self.assertRegex(short, r"\((\d+) earlier (messages|decisions|open items)", cap)
+        with mock.patch.dict(os.environ, {"FOCUSED_SUMMARY_CHARS": "500"}):
+            self.assertEqual(summary.limit(), summary.MINIMUM)
+
     def test_a_turn_jev_has_not_read_shows_the_message_and_the_last_text(self):
         self.write([user("u1", "What changed?", **HUMAN), assistant(text("Only the README."))])
         conn = self.index()

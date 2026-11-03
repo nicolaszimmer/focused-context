@@ -86,7 +86,8 @@ in, that came to about 5,300 tokens for 13 messages, out of about 730,000 tokens
 of conversation, three quarters of them tool output.
 
 Claude Code adds at most 10,000 characters of a hook's output to the context, so
-the summary loaded keeps under 9,500 (`FOCUSED_SUMMARY_CHARS` changes that). The
+the summary loaded keeps under 9,500 (`FOCUSED_SUMMARY_CHARS` changes that, down to
+2,000). The
 newest messages are kept and older ones dropped first. The full summary, with
 every message, is written to `~/.claude/focused/summaries/<session>.md`, readable
 by you only, and the loaded one names that file for Claude to read when an earlier

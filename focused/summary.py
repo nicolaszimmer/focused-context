@@ -23,11 +23,12 @@ from . import jev, store
 from .transcript import LISTED, is_own_command
 
 LIMIT = 9_500
+MINIMUM = 2_000
 
 
 def limit() -> int:
     try:
-        return max(1_000, int(os.environ.get("FOCUSED_SUMMARY_CHARS", LIMIT)))
+        return max(MINIMUM, int(os.environ.get("FOCUSED_SUMMARY_CHARS", LIMIT)))
     except ValueError:
         return LIMIT
 
@@ -133,12 +134,19 @@ def build(conn, session_id: str, full_path: Optional[str] = None, cap: Optional[
 
     full = sections([_turn_block(n, r, views.get(r["turn_key"]), 2_000) for n, r in numbered])
 
-    # The loaded summary: decisions and open items get a share of the limit each, the
-    # newest first, and say how many earlier ones are only in the full summary.
-    short_decisions = _newest(decisions, int(cap * 0.35), "decisions")
-    short_open = _newest(still_open, int(cap * 0.15), "open items")
-    short_facts = [_short(f, 600) for f in short_facts]
+    # The loaded summary. What is always there (the header, where the full summary is,
+    # the "quoted" note) is measured first; then files, commits and pull requests get up
+    # to 15% of what is left, decisions 50% and open items 20%, each its newest entries,
+    # saying how many earlier ones are only in the full summary; messages get the rest,
+    # newest first. Nothing is cut off mid-text.
     pointer = f" The full summary, with every message: {full_path}" if full_path else ""
+    fixed = len(sections([], pointer, [], [], []))
+    room = cap - fixed - 200
+    if room <= 0:  # not even the header fits: say where everything is
+        return sections([], pointer, ["- (Everything is in the full summary: the limit leaves no room here.)"], [], []), full
+    short_facts = _newest(short_facts, int(room * 0.15), "lists of files, commits or pull requests")
+    short_decisions = _newest(decisions, int(room * 0.50), "decisions")
+    short_open = _newest(still_open, int(room * 0.20), "open items")
     budget = cap - len(sections([], pointer, short_facts, short_decisions, short_open)) - 200
     chosen = []
     for number, row in reversed(numbered):
@@ -152,7 +160,7 @@ def build(conn, session_id: str, full_path: Optional[str] = None, cap: Optional[
     short = sections(chosen, pointer, short_facts, short_decisions, short_open)
     if note:
         short = short.rstrip("\n") + note + "\n"
-    return short[:cap], full
+    return short, full
 
 
 def _newest(lines: list, room: int, what: str) -> list:
