@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
     transcript_path TEXT,
     first_at TEXT,
-    last_at TEXT
+    last_at TEXT,
+    title TEXT
 );
 CREATE TABLE IF NOT EXISTS turns (
     id INTEGER PRIMARY KEY,
@@ -186,6 +187,8 @@ def connect(path) -> sqlite3.Connection:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(SCHEMA)
+        if "title" not in {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}:
+            conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT")  # an index made before 0.6.0
     finally:
         os.umask(old)
     for suffix in ("", "-wal", "-shm"):  # also tightens files made before this rule
@@ -242,10 +245,11 @@ def index_transcript(conn: sqlite3.Connection, path, stop_message: Optional[str]
             _index_parts(conn, session_id, parsed)
         stamps = [t.started_at for t in parsed.turns if t.started_at]
         conn.execute(
-            "INSERT INTO sessions (session_id, transcript_path, first_at, last_at) VALUES (?, ?, ?, ?) "
+            "INSERT INTO sessions (session_id, transcript_path, first_at, last_at, title) VALUES (?, ?, ?, ?, ?) "
             "ON CONFLICT (session_id) DO UPDATE SET transcript_path = excluded.transcript_path, "
-            "first_at = excluded.first_at, last_at = excluded.last_at",
-            (session_id, str(path), min(stamps, default=None), max(stamps, default=None)))
+            "first_at = excluded.first_at, last_at = excluded.last_at, "
+            "title = COALESCE(excluded.title, sessions.title)",
+            (session_id, str(path), min(stamps, default=None), max(stamps, default=None), parsed.title))
         prune(conn, now=now)
     return parsed
 

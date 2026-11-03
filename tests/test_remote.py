@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_focused import HUMAN, SESSION, Fixture, assistant, text, user  # noqa: E402
 
 from focused import cli, remote, store  # noqa: E402
+from focused.transcript import LISTED, is_own_command  # noqa: E402
 
 TOKEN = "test-token"
 TABLES = ("turns", "parts", "paras", "pairs")
@@ -78,8 +79,8 @@ class FakeWorker:
                     return self.reply(200, {"session_id": session, **found} if found else None) if found else \
                         self.reply(404, {"error": "no such session"})
                 if url.path == "/v1/sessions":
-                    listed = [{"session_id": k, "project": v["project"], "last_at": v["last_at"]}
-                              for k, v in worker.sessions.items() if query.get("project") in (None, v["project"])]
+                    listed = [worker.listed(k, v) for k, v in worker.sessions.items()
+                              if query.get("project") in (None, v["project"])]
                     listed.sort(key=lambda s: s["last_at"] or "", reverse=True)
                     return self.reply(200, {"sessions": listed[:int(query.get("limit", 20))]})
                 if url.path == "/v1/search":
@@ -100,10 +101,20 @@ class FakeWorker:
         held["paras"] = [p for p in held["paras"] if p["para_key"] not in moved]
         for table in TABLES:
             held[table] += body.get(table, [])
-        held.update(project=body["project"], first_at=body["first_at"], last_at=body["last_at"])
+        held.update(project=body["project"], first_at=body["first_at"], last_at=body["last_at"],
+                    title=body.get("title") or held.get("title"))
         if not held["turns"]:
             del self.sessions[session]
         return {"turns": len(body.get("turns", [])), "gone": len(body.get("gone", []))}
+
+    @staticmethod
+    def listed(session, held):
+        """A session as the Worker lists it (listSessions)."""
+        messages = [t for t in sorted(held["turns"], key=lambda t: t["seq"])
+                    if t["origin"] in LISTED and not is_own_command(t["prompt"])]
+        return {"session_id": session, "project": held["project"], "first_at": held["first_at"],
+                "last_at": held["last_at"], "title": held.get("title"), "turns": len(held["turns"]),
+                "messages": len(messages), "first_prompt": messages[0]["prompt"] if messages else None}
 
     def search(self, words, project):
         def matches(*texts):
@@ -166,9 +177,11 @@ class SettingsTest(unittest.TestCase):
 
 class PushTest(RemoteFixture):
     def test_a_push_sends_what_changed_and_nothing_twice(self):
+        self.write(SESSION + [{"type": "ai-title", "aiTitle": "Hooks", "sessionId": "s1"}])
         conn = self.index()
         done = remote.push(conn, "s1", "-work-repo")
         self.assertEqual((done["turns"], done["requests"], done["gone"]), (5, 1, 0))
+        self.assertEqual(self.worker.sessions["s1"]["title"], "Hooks")
         self.assertEqual(self.worker.rows("s1"), local_rows(conn, "s1"))
         self.assertEqual(self.worker.sessions["s1"]["project"], "-work-repo")
         self.assertEqual(remote.push(conn, "s1", "-work-repo")["requests"], 0)
@@ -278,6 +291,7 @@ class HostedCliTest(RemoteFixture):
 
     def push_from_elsewhere(self):
         """s1, pushed by its Stop hook on another machine; this one starts empty."""
+        self.write(SESSION + [{"type": "ai-title", "aiTitle": "Hooks and answers", "sessionId": "s1"}])
         payload = json.dumps({"session_id": "s1", "transcript_path": str(self.transcript)})
         self.assertEqual(self.run_cli("hook", "stop", stdin=payload), (0, ""))
         self.assertEqual(self.worker.sessions["s1"]["project"], "-work-repo")
@@ -319,14 +333,39 @@ class HostedCliTest(RemoteFixture):
         self.assertEqual(code, 2)
         self.assertIn("must be an https URL", out)
 
-    def test_context_in_a_new_container_loads_the_previous_session_from_the_hosted_index(self):
+    def test_context_in_a_new_container_offers_the_hosted_index_sessions_and_reads_the_one_chosen(self):
         self.push_from_elsewhere()
         self.new_session("<command-name>/focused:context</command-name>")
         with mock.patch.object(cli, "projects_dir", return_value=self.transcript.parent.parent):
             code, out = self.run_cli("--in-session", "s2", "context")
-        self.assertEqual(code, 0)
+            self.assertEqual(code, 0)
+            self.assertIn("focused: choose a session.", out)  # not loaded on a guess
+            self.assertIn("1. s1 | Hooks and answers | 2026-11-03 06:12 | 3 messages | How do hooks work? Second line", out)
+            self.assertNotIn("Summary of session", out)
+            code, out = self.run_cli("--in-session", "s2", "context", "--session", "s1")
         self.assertIn("Summary of session s1", out)
         self.assertIn("How do hooks work?", out)
+
+    def test_after_clear_without_its_note_the_hook_asks_the_hosted_index_nothing(self):
+        self.push_from_elsewhere()
+        fresh = self.new_session("Hello")
+        self.run_cli("hook", "stop", stdin=json.dumps({"session_id": "s2", "transcript_path": str(fresh)}))
+        before = len(self.worker.requests)
+        code, out = self.run_cli("hook", "session-start", stdin=json.dumps(
+            {"session_id": "s3", "transcript_path": str(fresh.parent / "s3.jsonl"), "source": "clear"}))
+        self.assertIn("session s2", out)  # this machine's latest, as before
+        self.assertEqual(len(self.worker.requests), before)
+
+    def test_a_session_is_named_by_the_start_of_its_id(self):
+        self.push_from_elsewhere()
+        long_id = "a82d5f99-557d-5aad-91d7-1f18fb47fa8b"
+        data = self.worker.sessions.pop("s1")
+        self.worker.sessions[long_id] = data
+        code, out = self.run_cli("answers", "--session", long_id[:8])
+        self.assertIn(f"# session {long_id}", out)
+        self.assertIn("A: Hooks only add context.", out)
+        code, out = self.run_cli("answers", "--session", long_id[:7])  # too short to name one
+        self.assertIn(f"No indexed sessions match {long_id[:7]}", out)
 
     def test_answers_reads_a_session_this_machine_does_not_have(self):
         self.push_from_elsewhere()

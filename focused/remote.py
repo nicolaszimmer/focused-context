@@ -148,8 +148,8 @@ def push(conn: sqlite3.Connection, session_id: str, project: str, timeout: float
         _record(conn, session_id, {key: digests[key] for key in skipped}, [])
         done["skipped"] = skipped
     changed = [key for key in changed if key not in skipped]
-    first_at, last_at = (conn.execute("SELECT first_at, last_at FROM sessions WHERE session_id = ?",
-                                      (session_id,)).fetchone() or (None, None))
+    first_at, last_at, title = (conn.execute("SELECT first_at, last_at, title FROM sessions WHERE session_id = ?",
+                                             (session_id,)).fetchone() or (None, None, None))
     pieces, piece, size = [], [], 0
     for key in changed:
         if piece and size + len(encoded[key]) > PIECE:
@@ -161,7 +161,7 @@ def push(conn: sqlite3.Connection, session_id: str, project: str, timeout: float
         pieces.append(piece)
     for i, keys in enumerate(pieces):
         named_gone = gone if i == 0 else []
-        body = {"project": project, "first_at": first_at, "last_at": last_at, "gone": named_gone,
+        body = {"project": project, "first_at": first_at, "last_at": last_at, "title": title, "gone": named_gone,
                 **{table: [row for key in keys for row in groups[key][table]] for table in COLUMNS}}
         left = deadline - clock()
         if left < 1:
@@ -207,9 +207,10 @@ def save(conn: sqlite3.Connection, session_id: str, data: dict) -> int:
         for table in ("pairs", "parts", "paras", "turns", "pushed"):
             conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
         conn.execute(
-            "INSERT INTO sessions (session_id, transcript_path, first_at, last_at) VALUES (?, NULL, ?, ?) "
-            "ON CONFLICT (session_id) DO UPDATE SET first_at = excluded.first_at, last_at = excluded.last_at",
-            (session_id, data.get("first_at"), data.get("last_at")))
+            "INSERT INTO sessions (session_id, transcript_path, first_at, last_at, title) VALUES (?, NULL, ?, ?, ?) "
+            "ON CONFLICT (session_id) DO UPDATE SET first_at = excluded.first_at, last_at = excluded.last_at, "
+            "title = excluded.title",
+            (session_id, data.get("first_at"), data.get("last_at"), data.get("title")))
         for table, columns in COLUMNS.items():
             rows = [row for row in data.get(table, []) if row.get("turn_key") in turns]
             conn.executemany(
@@ -221,7 +222,8 @@ def save(conn: sqlite3.Connection, session_id: str, data: dict) -> int:
 
 
 def sessions(project: Optional[str], limit: int = 20, timeout: float = 15.0) -> list:
-    """Recent sessions, newest first: id, project, times, turn count and first message."""
+    """Recent sessions, newest first: id, project, times, title, turn and message counts,
+    and first message."""
     query = urllib.parse.urlencode({k: v for k, v in (("project", project), ("limit", limit)) if v is not None})
     return list(_call("GET", f"/v1/sessions?{query}", timeout=timeout).get("sessions") or [])
 

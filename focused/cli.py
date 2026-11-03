@@ -28,6 +28,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -173,6 +174,37 @@ def _holds(db: Path, session: str) -> bool:
         return False
 
 
+PLAIN_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
+SHORTEST_PREFIX = 8  # `find` shows a session by its first 8 characters
+
+
+def _resolve(args, db: Path, session: Optional[str]) -> Optional[str]:
+    """A session named by the start of its id, at least 8 characters, as its whole id, when
+    exactly one session on this machine or in the hosted index starts so; else as given."""
+    if not session or len(session) < SHORTEST_PREFIX or not PLAIN_ID.fullmatch(session) or _holds(db, session):
+        return session
+    found = set()
+    for index in [db] + ([] if args.db else sorted(store.home().glob("*.sqlite"))):
+        try:
+            with closing(sqlite3.connect(index.as_uri() + "?mode=ro", uri=True)) as conn:
+                found.update(row[0] for row in conn.execute(
+                    "SELECT session_id FROM sessions WHERE substr(session_id, 1, ?) = ?", (len(session), session)))
+        except sqlite3.Error:
+            continue
+    if not found:
+        try:
+            if remote.settings() is not None:
+                found.update(row["session_id"] for row in remote.sessions(None, limit=200)  # ids are unique
+                             if str(row.get("session_id", "")).startswith(session))
+        except remote.RemoteError:
+            pass
+    if len(found) == 1:
+        return found.pop()
+    if found:
+        print(f"focused: {len(found)} sessions start with {session}: {', '.join(sorted(found))}.\n")
+    return session
+
+
 def _with_session(args, db: Path, session: Optional[str]) -> Path:
     """The index that holds `session`: this project's, another one on this machine, or
     the one its rows are read into from the hosted index (its own project's, or --db).
@@ -268,35 +300,18 @@ def _cleared(db: Path) -> Optional[str]:
     return note.get("session") if fresh and note.get("db") == str(db) else None
 
 
-def _previous_session(conn, db: Path, current: Optional[str]) -> Optional[str]:
-    """The session /clear just ended (its SessionEnd note), else the project's most
-    recent other session, re-read so its last turns are in. When this machine has no
-    other session, as in a new cloud container, the project's latest in the hosted index."""
-    target = _cleared(db) or next((row[0] for row in conn.execute(
-        "SELECT session_id FROM sessions WHERE session_id IS NOT ? ORDER BY last_at DESC LIMIT 1",
-        (current,))), None) or _hosted_previous(conn, db, current)
+def _previous_session(conn, db: Path, current: Optional[str], guess: bool = True) -> Optional[str]:
+    """The session /clear just ended (its SessionEnd note), else, with `guess`, the
+    project's most recent other session on this machine; re-read so its last turns are in."""
+    target = _cleared(db)
+    if target is None and guess:
+        target = next((row[0] for row in conn.execute(
+            "SELECT session_id FROM sessions WHERE session_id IS NOT ? ORDER BY last_at DESC LIMIT 1",
+            (current,))), None)
     row = conn.execute("SELECT transcript_path FROM sessions WHERE session_id = ?", (target,)).fetchone()
     if row and row[0]:
         _reindex(conn, row[0])  # its last turns, if the Stop hook hadn't got to them
     return target
-
-
-def _hosted_previous(conn, db: Path, current: Optional[str]) -> Optional[str]:
-    """The project's most recent other session in the hosted index, read into this one."""
-    try:
-        if remote.settings() is None:
-            return None
-        listed = remote.sessions(db.stem, limit=5, timeout=5.0)
-        target = next((row.get("session_id") for row in listed if row.get("session_id") != current), None)
-        data = remote.fetch(target, timeout=5.0) if target else None
-        if data is None:
-            return None
-        remote.save(conn, target, data)
-        return target
-    except (remote.RemoteError, sqlite3.Error) as error:
-        failure = str(error)
-    _log("hosted index", f"the previous session: {failure}")
-    return None
 
 
 def _push(conn, session: str, transcript, timeout: float) -> Optional[str]:
@@ -473,7 +488,9 @@ def cmd_index(args) -> int:
 
 
 def cmd_answers(args) -> int:
-    with closing(store.connect(_with_session(args, _db(args), args.session))) as conn:
+    db = _db(args)
+    args.session = _resolve(args, db, args.session)
+    with closing(store.connect(_with_session(args, db, args.session))) as conn:
         return _answers(args, conn)
 
 
@@ -496,7 +513,9 @@ def _answers(args, conn) -> int:
 
 
 def cmd_context(args) -> int:
-    db = _with_session(args, _db(args), args.session)
+    db = _db(args)
+    args.session = _resolve(args, db, args.session)
+    db = _with_session(args, db, args.session)
     with closing(store.connect(db)) as conn:
         session = args.session or args.in_session or store.latest_session(conn)
         if not session:
@@ -505,13 +524,15 @@ def cmd_context(args) -> int:
             full_path = _summary_file(session)
             short, full = summary.build(conn, session, str(full_path))
             if not short and args.in_session and not args.session:
-                # Right after /clear the session holds only this command: show the one
-                # cleared, as the SessionStart hook did.
-                previous = _previous_session(conn, db, args.in_session)
-                if previous:
-                    session = previous
-                    full_path = _summary_file(session)
-                    short, full = summary.build(conn, session, str(full_path))
+                # Nothing said in this session yet. Right after /clear, show the session it
+                # ended, as the SessionStart hook did. Otherwise a new session needn't continue
+                # the latest one, so the person chooses (skills/context).
+                previous = _previous_session(conn, db, args.in_session, guess=False)
+                if not previous:
+                    return _choose(conn, db, args.in_session)
+                session = previous
+                full_path = _summary_file(session)
+                short, full = summary.build(conn, session, str(full_path))
         except ValueError as error:
             return _fail(args, f"focused: {error}.", 2)
     if not short:
@@ -525,6 +546,58 @@ def cmd_context(args) -> int:
         return 0
     print(full if args.full else short)
     return 0
+
+
+CHOICES = 3
+CHOOSE = "focused: choose a session."
+
+
+def _choose(conn, db: Path, current: Optional[str]) -> int:
+    """The project's latest sessions, here and in the hosted index, one a line as
+    `n. id | title | when | messages | first message`, for the context skill to offer."""
+    choices, problem = _choices(conn, db, current)
+    if problem:
+        print(problem + "\n")
+    if not choices:
+        print("focused: no other session of this project is indexed, so there is no summary to show.")
+        return 0
+
+    def plain(text, limit: int) -> str:
+        return preview(" ".join(str(text or "").split()).replace("|", "/"), limit)
+
+    print(f"{CHOOSE} Nothing has been said in this one yet, and a new session doesn't always continue "
+          "the latest, so focused doesn't guess. The project's latest sessions:")
+    for n, row in enumerate(choices, 1):
+        messages = row.get("messages") or 0
+        print(f"{n}. {row['session_id']} | {plain(row.get('title'), 60) if row.get('title') else '(no title)'} | "
+              f"{(row.get('last_at') or '')[:16].replace('T', ' ')} | {messages} message{'' if messages == 1 else 's'} | "
+              f"{plain(row.get('first_prompt'), 100)}")
+    return 0
+
+
+def _choices(conn, db: Path, current: Optional[str]) -> tuple:
+    """Up to CHOICES of the project's other sessions with a message in them, newest first,
+    from this index and the hosted one; and what went wrong reading the hosted one."""
+    conn.create_function("is_own_command", 1, is_own_command, deterministic=True)
+    listed = ", ".join("?" * len(LISTED))
+    question = f"origin IN ({listed}) AND NOT is_own_command(prompt)"
+    found = {row["session_id"]: dict(row) for row in conn.execute(
+        "SELECT s.session_id, s.last_at, s.title, "
+        f"(SELECT COUNT(*) FROM turns WHERE session_id = s.session_id AND {question}) AS messages, "
+        f"(SELECT prompt FROM turns WHERE session_id = s.session_id AND {question} ORDER BY seq LIMIT 1) AS first_prompt "
+        "FROM sessions s WHERE s.session_id IS NOT ? ORDER BY s.last_at DESC LIMIT 20",
+        (*LISTED, *LISTED, current))}
+    problem = None
+    try:
+        if remote.settings() is not None:
+            for row in remote.sessions(db.stem, limit=20, timeout=8.0):
+                found.setdefault(str(row.get("session_id")), row)
+    except remote.RemoteError as error:
+        problem = f"focused: could not list the hosted index's sessions ({error}), so these are only this machine's."
+    choices = [row for key, row in found.items()
+               if key != current and PLAIN_ID.fullmatch(key) and (row.get("messages") or 0) > 0]
+    choices.sort(key=lambda row: row.get("last_at") or "", reverse=True)
+    return choices[:CHOICES], problem
 
 
 def cmd_install(args) -> int:
@@ -630,7 +703,8 @@ def main(argv=None) -> int:
     answers.set_defaults(run=cmd_answers)
 
     context = sub.add_parser("context", help="the summary loaded after /clear and compaction")
-    context.add_argument("--session", help="a session id (default: the latest in this project)")
+    context.add_argument("--session", help="a session id, or its first 8 characters or more "
+                         "(default: this session; in a session with nothing said yet, a choice of the latest)")
     context.add_argument("--full", action="store_true", help="every message, not only what fits the hook's limit")
     context.set_defaults(run=cmd_context)
 

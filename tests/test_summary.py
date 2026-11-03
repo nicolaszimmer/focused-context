@@ -209,7 +209,7 @@ class SessionStartTest(Fixture):
                 mock.patch.object(cli, "projects_dir", return_value=self.transcript.parent.parent), \
                 redirect_stdout(io.StringIO()) as out:
             cli.main(["--in-session", "s2", "context"])
-        self.assertIn("Session s2 has no messages indexed.", out.getvalue())
+        self.assertIn("no other session of this project is indexed", out.getvalue())
 
     def test_a_failed_reread_still_loads_the_summary_from_the_index(self):
         self.run_hook("stop", {"session_id": "s1", "transcript_path": str(self.transcript)})
@@ -251,3 +251,87 @@ class RetentionTest(Fixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChooseTest(Fixture):
+    """/focused-context in a session with nothing said yet: a choice, not a guess."""
+
+    def setUp(self):
+        super().setUp()
+        os.environ["FOCUSED_RETENTION_DAYS"] = "36500"
+        self.project = self.transcript.parent
+
+    def session(self, sid, minute, prompts, title=None):
+        entries = []
+        for n, prompt in enumerate(prompts):
+            ts = f"2026-11-03T06:{minute + n:02d}:00.000Z"
+            entries += [user(f"{sid}-u{n}", prompt, ts=ts, **HUMAN) | {"sessionId": sid},
+                        assistant(text(f"Answer {n}.")) | {"sessionId": sid}]
+        if title:
+            entries += [{"type": "ai-title", "aiTitle": "An older title", "sessionId": sid},
+                        {"type": "ai-title", "aiTitle": title, "sessionId": sid}]
+        path = self.project / f"{sid}.jsonl"
+        path.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+        with closing(store.connect(store.db_for_transcript(path))) as conn:
+            store.index_transcript(conn, path)
+
+    def context(self, *args):
+        with mock.patch.object(cli, "projects_dir", return_value=self.project.parent), \
+                redirect_stdout(io.StringIO()) as out:
+            code = cli.main(["--in-session", "cur", "context", *args])
+        return code, out.getvalue()
+
+    def test_the_latest_three_sessions_with_a_message_are_offered_newest_first(self):
+        self.transcript.unlink()
+        self.session("s1", 0, ["How do hooks work?", "And the index?"], title="Hooks and the index")
+        self.session("s2", 10, ["<command-name>/focused-context</command-name>"])  # only focused's own command
+        self.session("s3", 20, ["/focused-find hooks", "Where | is the\nretry?"])
+        self.session("s4", 30, ["Merge it."], title="Merge | the PR")
+        self.session("s5", 40, ["Deploy the Worker."], title="Worker deploy with a much longer title than fits")
+        self.session("cur", 50, ["<command-name>/focused-context</command-name>"])
+        code, out = self.context()
+        self.assertEqual(code, 0)
+        lines = out.splitlines()
+        self.assertTrue(lines[0].startswith("focused: choose a session."))
+        self.assertEqual(lines[1:], [
+            "1. s5 | Worker deploy with a much longer title than fits | 2026-11-03 06:40 | 1 message | Deploy the Worker.",
+            "2. s4 | Merge / the PR | 2026-11-03 06:30 | 1 message | Merge it.",
+            "3. s3 | (no title) | 2026-11-03 06:21 | 1 message | Where / is the retry?",
+        ])
+        code, out = self.context("--session", "s1")
+        self.assertIn("Summary of session s1", out)
+
+    def test_right_after_clear_the_cleared_session_is_shown_without_asking(self):
+        self.transcript.unlink()
+        self.session("s1", 0, ["How do hooks work?"])
+        self.session("s4", 30, ["Merge it."])
+        self.session("cur", 50, ["<command-name>/focused-context</command-name>"])
+        cli._note_cleared(store.db_for_transcript(self.project / "s1.jsonl"), "s1")
+        code, out = self.context()
+        self.assertIn("Summary of session s1", out)
+        self.assertNotIn("choose a session", out)
+
+    def test_the_title_is_the_latest_one_claude_code_gave(self):
+        self.session("s1", 0, ["How do hooks work?"], title="Hooks")
+        with closing(store.connect(store.db_for_transcript(self.project / "s1.jsonl"))) as conn:
+            self.assertEqual(conn.execute("SELECT title FROM sessions WHERE session_id = 's1'").fetchone()[0], "Hooks")
+
+    def test_an_index_from_before_titles_gets_the_column(self):
+        db = self.dir / "old.sqlite"
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, transcript_path TEXT, first_at TEXT, last_at TEXT)")
+            conn.execute("INSERT INTO sessions VALUES ('old', NULL, NULL, NULL)")
+            conn.commit()
+        with closing(store.connect(db)) as conn:
+            self.assertEqual(conn.execute("SELECT session_id, title FROM sessions").fetchall()[0][:], ("old", None))
+
+    def test_a_session_is_named_by_the_start_of_its_id_and_an_ambiguous_start_is_reported(self):
+        self.transcript.unlink()
+        self.session("abcdefgh-one", 0, ["How do hooks work?"])
+        self.session("abcdefgh-two", 10, ["Merge it."])
+        self.session("cur", 50, ["<command-name>/focused-context</command-name>"])
+        code, out = self.context("--session", "abcdefgh-t")
+        self.assertIn("summaries/abcdefgh-two.md", out)
+        self.assertIn("You: Merge it.", out)
+        code, out = self.context("--session", "abcdefgh")
+        self.assertIn("2 sessions start with abcdefgh: abcdefgh-one, abcdefgh-two.", out)

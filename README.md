@@ -101,6 +101,13 @@ detail matters.
   full summary over 25,000 characters is read from its file instead, since the
   Bash tool returns at most 30,000 by default. The command may read files in
   `~/.claude/focused/summaries/` without asking, and no others.
+- **In a session where nothing has been said yet**, `/focused:context` shows the
+  session `/clear` just ended, if it did. Otherwise it doesn't guess, since a new
+  session doesn't always continue the latest one: it asks which to show, offering the
+  project's three latest sessions by their titles (as Claude Code names them), with the
+  time, number of messages and first message of each, and a field for any other
+  session's id, or its first 8 characters as `/focused:find` shows them.
+  `/focused:context <id>` shows one directly.
 
 Before building the summary, the hook re-reads the transcript into the index, which
 takes under a second. It asks Jev nothing, so it stays quick, and if the re-read
@@ -171,11 +178,11 @@ environment's settings, add its host to the allowed domains, or choose a broader
   whose rows changed since the last one, in pieces of about 512 KB, and names the turns
   deleted here, so they go there too. A piece the Worker took is noted at once: a push cut
   short goes on from there next time.
-- **Reading back:** `/focused-context` in a session that has no other on this machine, as
-  in a new container, shows the project's latest other session from the hosted index.
-  `focused answers --session <id>` and `focused context --session <id>` read a session
-  this machine doesn't have, into the index of its project. `/focused-find` adds the
-  matches from sessions not on this machine, with their full ids.
+- **Reading back:** the sessions `/focused-context` offers in a new session include the
+  hosted index's, so a new container offers those of earlier containers, and the one
+  chosen is read into this machine's index. `focused answers --session <id>` and
+  `focused context --session <id>` read a session this machine doesn't have the same way.
+  `/focused-find` adds the matches from sessions not on this machine, with their full ids.
 - **Retention is each side's own:** a turn deleted here for its age isn't deleted there.
   The Worker deletes turns older than its `RETENTION_DAYS` (30).
 - **If it fails** (no network, a wrong token), the hooks write it to
@@ -193,7 +200,7 @@ environment's settings, add its host to the allowed domains, or choose a broader
 - One database per project, `~/.claude/focused/<project>.sqlite`, where
   `<project>` is Claude Code's own folder name for the project. It is readable
   by its owner only.
-- Tables: `sessions`; `turns`, with full-text search on prompt and final
+- Tables: `sessions`, with each session's title; `turns`, with full-text search on prompt and final
   answer; `parts` of your messages, with Jev's kinds; `paras`, every paragraph
   Claude wrote, with full-text search; and `pairs`, Jev's answer for each part
   and paragraph; and `pushed`, the digest of each turn as last pushed to the
@@ -384,6 +391,10 @@ Made on 2026-11-03 by the maintainer:
 - The index and a ledger of decisions, to-dos and findings will be hosted on the
   maintainer's Cloudflare account, in a Worker in its own repository. New Jev questions
   for it ship switched off and are judged by their output.
+- `/focused-context` in a session where nothing has been said yet doesn't load the
+  latest session on a guess, as not every session continues the last one's objective:
+  it offers the project's three latest sessions, and a field for any other, as Claude
+  Code's own questions do. Right after `/clear` it still shows the session cleared.
 
 Open:
 
@@ -392,9 +403,6 @@ Open:
    suggestion, not yet confirmed.
 3. The limit on the summary loaded after `/clear` and compaction: 9,500
    characters, set by Claude under Claude Code's 10,000.
-4. Whether `/focused-context` in a session with no other on its machine should load the
-   project's latest session from the hosted index, as built, or only a session named by
-   id. With several sessions running at once, the latest may be another one running.
-5. Which sessions count as one project: every cloud session with more than one
+4. Which sessions count as one project: every cloud session with more than one
    repository runs in `/home/user`, so all of them share the project `-home-user`, and
    the hosted index's "latest session" and search span all of them.
