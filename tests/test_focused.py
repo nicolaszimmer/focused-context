@@ -291,7 +291,8 @@ class PluginTest(unittest.TestCase):
         for skill in ("answers", "find"):
             body = (ROOT / "skills" / skill / "SKILL.md").read_text()
             self.assertIn("disable-model-invocation: true", body)
-            self.assertIn("--in-session ${CLAUDE_SESSION_ID}", body)
+            self.assertIn('--in-session "${CLAUDE_SESSION_ID}" --args-stdin', body)
+            self.assertIn("<<'FOCUSED_ARGS'\n$ARGUMENTS\nFOCUSED_ARGS", body)  # quoted heredoc: no shell
 
     def test_launcher_runs_the_hook_without_installing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -331,6 +332,33 @@ class InSessionTest(Fixture):
         code, out = self.run_cli("--in-session", "s1", "find", "hooks")
         self.assertEqual(code, 0)
         self.assertIn("[hooks]", out.lower())
+
+    def run_skill(self, *args, stdin):
+        out = io.StringIO()
+        with redirect_stdout(out), mock.patch("sys.stdin", io.StringIO(stdin)):
+            code = cli.main(["--in-session", "s1", "--args-stdin", *args])
+        return code, out.getvalue()
+
+    def test_skill_arguments_arrive_as_plain_words(self):
+        code, out = self.run_skill("find", stdin="hooks don't $(touch pwned) ; `id` \"\n")
+        self.assertEqual(code, 0)
+        self.assertFalse(Path("pwned").exists())
+        code, out = self.run_skill("answers", stdin="-n 1 --events\n")
+        self.assertEqual(code, 0)
+        self.assertIn("## 4.", out)
+
+    def test_bad_skill_options_are_reported_not_fatal(self):
+        code, out = self.run_skill("answers", stdin="--bogus\n")
+        self.assertEqual(code, 0)
+        self.assertIn("unrecognized arguments: --bogus", out)
+
+    def test_a_failed_refresh_falls_back_to_the_existing_index(self):
+        self.run_cli("--in-session", "s1", "answers")
+        with mock.patch.object(store, "index_transcript", side_effect=sqlite3.OperationalError("database is locked")):
+            code, out = self.run_cli("--in-session", "s1", "answers")
+        self.assertEqual(code, 0)
+        self.assertIn("could not refresh the index (database is locked)", out)
+        self.assertIn("A: Hooks only add context.", out)
 
     def test_problems_go_to_stdout_with_exit_0_so_a_skill_is_not_aborted(self):
         self.transcript.unlink()

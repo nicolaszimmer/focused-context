@@ -8,8 +8,11 @@
 
 From a skill, pass --in-session <id>: focused reindexes that session's transcript, uses
 its project's index, and reports problems on stdout with exit code 0, because a failing
-command aborts a skill.
+command aborts a skill. With --args-stdin, the subcommand's arguments are read from
+stdin and split on whitespace, so a skill can pass what the user typed through a quoted
+heredoc instead of through the shell.
 """
+
 
 from __future__ import annotations
 
@@ -27,6 +30,19 @@ from pathlib import Path
 
 from . import store
 from .transcript import LISTED
+
+
+class SkillMessage(Exception):
+    """An argument error to report on stdout instead of exiting non-zero."""
+
+
+class Parser(argparse.ArgumentParser):
+    skill_mode = False
+
+    def error(self, message):
+        if Parser.skill_mode:
+            raise SkillMessage(f"{self.prog}: {message}")
+        super().error(message)
 
 
 def preview(text, limit: int, first_line: bool = False) -> str:
@@ -99,8 +115,11 @@ def _db_for_session(session: str) -> Path:
     """The index of the project this session belongs to, refreshed from its transcript."""
     for transcript in projects_dir().glob(f"*/{glob.escape(session)}.jsonl"):
         db = store.db_for_transcript(transcript)
-        with closing(store.connect(db)) as conn:
-            store.index_transcript(conn, transcript)
+        try:
+            with closing(store.connect(db)) as conn:
+                store.index_transcript(conn, transcript)
+        except (OSError, ValueError, sqlite3.Error) as error:  # e.g. locked by the Stop hook
+            print(f"focused: could not refresh the index ({error}); answering from the existing one.\n")
         return db
     for db in sorted(store.home().glob("*.sqlite")):  # the transcript is gone, the index may not be
         try:
@@ -198,8 +217,13 @@ def cmd_find(args) -> int:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(prog="focused", description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if "--args-stdin" in argv:
+        argv.remove("--args-stdin")
+        argv += sys.stdin.read().split()  # plain words: no shell, no quote handling
+    Parser.skill_mode = "--in-session" in argv
+    parser = Parser(prog="focused", description=__doc__,
+                    formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--db", help="the index database (default: one per project under ~/.claude/focused)")
     parser.add_argument("--in-session", metavar="ID",
                         help="use the index of this session's project, refreshed first (for skills)")
@@ -228,7 +252,11 @@ def main(argv=None) -> int:
     find.add_argument("--limit", type=int, default=10)
     find.set_defaults(run=cmd_find)
 
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except SkillMessage as message:
+        print(message)
+        return 0
     return args.run(args)
 
 
