@@ -168,7 +168,7 @@ It brings:
   session's messages with their answers; `/focused:find <words>` searches every
   message and reply in this project, wake-ups included. Each reindexes the session first, and
   leaves out focused's own commands (`/focused:…`, and a repository's copies
-  `/focused-answers` and `/focused-find`, below). Claude runs them through the
+  `/focused-answers`, `/focused-find` and `/focused-context`, below). Claude runs them through the
   Bash tool, passing each of your words as its own single-quoted argument, with
   a `'` inside a word written as `'\''`. The quoting is Claude's, under Claude
   Code's normal permission checks, which check each part of a compound command:
@@ -212,10 +212,11 @@ rapid-review-bot carries the setup for its own single-repository cloud sessions:
   machine, into `~/.cache/focused-context/<commit>`, and runs it. Its hooks act
   only when `CLAUDE_CODE_REMOTE=true`, so on a machine with the plugin installed
   they do nothing and the plugin indexes.
-- `.claude/settings.json` runs it as the `Stop` and `SessionEnd` hooks.
-- `.claude/skills/focused-answers` and `focused-find` are the two commands, as
-  `/focused-answers` and `/focused-find`, because cloud sessions load a
-  repository's skills but not plugins.
+- `.claude/settings.json` runs it as the `Stop`, `SessionEnd` and `SessionStart`
+  hooks, the last after `/clear` and compaction only.
+- `.claude/skills/focused-answers`, `focused-find` and `focused-context` are the
+  three commands, as `/focused-answers`, `/focused-find` and `/focused-context`,
+  because cloud sessions load a repository's skills but not plugins.
 
 A cloud session can fetch focused-context only while it is public: a private
 repository is readable only when it is attached to the session, and a session
