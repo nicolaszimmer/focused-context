@@ -118,6 +118,12 @@ class ParseTest(Fixture):
         self.assertEqual(first.commits, ["abc1234"])
         self.assertEqual(first.pull_requests, ["https://github.com/o/r/pull/7"])
 
+    def test_commit_lines_git_prints(self):
+        from focused.transcript import COMMIT_LINE
+        lines = "\n".join(["[main abc1234] x", "[main (root-commit) bcd2345] x",
+                           "[detached HEAD cde3456] x", "[feature/a-b def4567] x", "[not a commit] x"])
+        self.assertEqual(COMMIT_LINE.findall(lines), ["abc1234", "bcd2345", "cde3456", "def4567"])
+
     def test_sidechain_skipped_and_image_not_counted(self):
         parsed = parse(self.transcript)
         self.assertNotIn("subagent prompt", [t.prompt for t in parsed.turns])
@@ -153,10 +159,18 @@ class StoreTest(Fixture):
         self.assertEqual(self.count(conn), 0)
         self.assertEqual(self.count(conn, "SELECT count(*) FROM sessions"), 0)
 
-    def test_database_is_private(self):
-        self.index()
-        mode = os.stat(store.db_for_transcript(self.transcript)).st_mode & 0o777
-        self.assertEqual(mode, 0o600)
+    def test_database_and_its_wal_files_are_private_under_a_default_umask(self):
+        old = os.umask(0o022)
+        try:
+            conn = self.index()  # left open, so -wal and -shm exist
+        finally:
+            os.umask(old)
+        db = store.db_for_transcript(self.transcript)
+        for suffix in ("", "-wal", "-shm"):
+            path = Path(f"{db}{suffix}")
+            self.assertTrue(path.exists(), path)
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600, path)
+        self.assertEqual(self.count(conn), 6)
 
 
 class CliTest(Fixture):

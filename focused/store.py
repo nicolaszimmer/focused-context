@@ -119,15 +119,22 @@ def retention_days() -> int:
 
 
 def connect(path) -> sqlite3.Connection:
+    """Open the index. The database and its -wal and -shm files are owner-only:
+    prompts and answers can hold secrets."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    new = not path.exists()
-    conn = sqlite3.connect(path, timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(SCHEMA)
-    if new:
-        os.chmod(path, 0o600)  # prompts and answers can hold secrets
+    old = os.umask(0o077)  # SQLite then gives -wal and -shm the database's own 0600
+    try:
+        conn = sqlite3.connect(path, timeout=10)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.executescript(SCHEMA)
+    finally:
+        os.umask(old)
+    for suffix in ("", "-wal", "-shm"):  # also tightens files made before this rule
+        sidecar = Path(f"{path}{suffix}")
+        if sidecar.exists():
+            os.chmod(sidecar, 0o600)
     return conn
 
 

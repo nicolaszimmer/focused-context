@@ -95,7 +95,7 @@ def cmd_hook_stop(args) -> int:
         try:
             log = store.home() / "errors.log"
             log.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            with open(log, "a", encoding="utf-8") as handle:
+            with open(os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a", encoding="utf-8") as handle:
                 handle.write(f"{datetime.now(timezone.utc).isoformat()} hook stop\n{traceback.format_exc()}\n")
         except OSError:
             pass

@@ -30,7 +30,8 @@ FIXED_ATTACHMENTS = {
     "environment", "date", "auto_mode",
 }
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
-COMMIT_LINE = re.compile(r"^\[[^\]\s]+(?: \(root-commit\))? ([0-9a-f]{7,40})\]", re.M)
+# git commit's first line: "[main abc1234]", "[main (root-commit) abc1234]", "[detached HEAD abc1234]"
+COMMIT_LINE = re.compile(r"^\[[^\]]+? ([0-9a-f]{7,40})\]", re.M)
 PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 
 HUMAN = "human"
