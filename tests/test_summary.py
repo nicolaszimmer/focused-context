@@ -52,6 +52,28 @@ class SummaryTest(Fixture):
         self.assertIn("### 1.", full)
         self.assertGreater(len(full), len(short))
 
+    def test_decisions_that_do_not_fit_are_counted_not_dropped_silently(self):
+        class Deciding(FakeJev):
+            def __call__(self, state, questions, deadline=None):
+                answers = super().__call__(state, questions)
+                for name in answers:
+                    if name.startswith("decision_"):
+                        answers[name] = {"type": "noul", "noul": 0.9}
+                return answers
+
+        entries = []
+        for n in range(40):
+            entries += [user(f"u{n}", f"Decided: keep option {n} for the index, " + "because " * 20, ts=f"2026-11-03T06:{n:02d}:00.000Z", **HUMAN),
+                        assistant(text(f"Kept option {n}."))]
+        self.write(entries)
+        conn = self.index()
+        store.ask_jev(conn, "s1", ask=Deciding())
+        short, full = summary.build(conn, "s1", cap=4000)
+        self.assertLessEqual(len(short), 4000)
+        self.assertRegex(short, r"- \((\d+) earlier decisions are only in the full summary\.\)")
+        self.assertIn("keep option 39", short)  # the newest decision stays
+        self.assertEqual(full.count("Decided: keep option"), 40 * 2)  # in Decisions and in Messages
+
     def test_a_turn_jev_has_not_read_shows_the_message_and_the_last_text(self):
         self.write([user("u1", "What changed?", **HUMAN), assistant(text("Only the README."))])
         conn = self.index()

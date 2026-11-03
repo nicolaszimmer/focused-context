@@ -113,27 +113,31 @@ def build(conn, session_id: str, full_path: Optional[str] = None, cap: Optional[
             "that answered them; tool output, narration and wake-ups are left out. Tags are Jev's reading of "
             "each part. Search earlier text with /focused:find.")
 
-    def sections(turns: list, extra: str = "", fact_lines: Optional[list] = None) -> str:
+    def sections(turns: list, extra: str = "", fact_lines: Optional[list] = None,
+                 decision_lines: Optional[list] = None, open_lines: Optional[list] = None) -> str:
+        decision_lines = decisions if decision_lines is None else decision_lines
+        open_lines = still_open if open_lines is None else open_lines
+        fact_lines = facts if fact_lines is None else fact_lines
         parts = [head + extra]
-        if decisions:
-            parts.append("## Decisions\n" + "\n".join(decisions))
-        if still_open:
-            parts.append("## Still open\n" + "\n".join(still_open))
-        if fact_lines if fact_lines is not None else facts:
-            parts.append("## Files, commits and pull requests\n" + "\n".join(fact_lines if fact_lines is not None else facts))
+        if decision_lines:
+            parts.append("## Decisions\n" + "\n".join(decision_lines))
+        if open_lines:
+            parts.append("## Still open\n" + "\n".join(open_lines))
+        if fact_lines:
+            parts.append("## Files, commits and pull requests\n" + "\n".join(fact_lines))
         if turns:
             parts.append("## Messages\n" + "\n\n".join(turns))
         return "\n\n".join(parts) + "\n"
 
     full = sections([_turn_block(n, r, views.get(r["turn_key"]), 2_000) for n, r in numbered])
 
+    # The loaded summary: decisions and open items get a share of the limit each, the
+    # newest first, and say how many earlier ones are only in the full summary.
+    short_decisions = _newest(decisions, int(cap * 0.35), "decisions")
+    short_open = _newest(still_open, int(cap * 0.15), "open items")
+    short_facts = [_short(f, 600) for f in short_facts]
     pointer = f" The full summary, with every message: {full_path}" if full_path else ""
-    budget = cap - len(sections([], pointer, short_facts)) - 200
-    if budget < 0:  # decisions, open items and facts alone are too long: keep the newest of each
-        decisions[:] = decisions[-8:]
-        still_open[:] = still_open[-8:]
-        short_facts = [_short(f, 600) for f in short_facts]
-        budget = cap - len(sections([], pointer, short_facts)) - 200
+    budget = cap - len(sections([], pointer, short_facts, short_decisions, short_open)) - 200
     chosen = []
     for number, row in reversed(numbered):
         block = _turn_block(number, row, views.get(row["turn_key"]), 300)
@@ -143,7 +147,21 @@ def build(conn, session_id: str, full_path: Optional[str] = None, cap: Optional[
         budget -= len(block) + 2
     left_out = len(numbered) - len(chosen)
     note = f"\n\n({left_out} earlier messages are only in the full summary.)" if left_out else ""
-    short = sections(chosen, pointer, short_facts)
+    short = sections(chosen, pointer, short_facts, short_decisions, short_open)
     if note:
         short = short.rstrip("\n") + note + "\n"
     return short[:cap], full
+
+
+def _newest(lines: list, room: int, what: str) -> list:
+    """The newest lines that fit in `room` characters, in order, and a line saying how
+    many earlier ones were left out."""
+    kept, used = [], 0
+    for line in reversed(lines):
+        if used + len(line) + 1 > room:
+            break
+        kept.insert(0, line)
+        used += len(line) + 1
+    if len(kept) < len(lines):
+        kept.insert(0, f"- ({len(lines) - len(kept)} earlier {what} are only in the full summary.)")
+    return kept
