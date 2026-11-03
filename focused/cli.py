@@ -170,12 +170,14 @@ def _fail(args, message: str, code: int) -> int:
     return code
 
 
-def _log(what: str) -> None:
+def _log(what: str, detail: str = "") -> None:
+    """A line in ~/.claude/focused/errors.log; inside an except block, with the traceback."""
     try:
         log = store.home() / "errors.log"
         log.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        trace = traceback.format_exc() if sys.exc_info()[0] else ""
         with open(os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a", encoding="utf-8") as handle:
-            handle.write(f"{datetime.now(timezone.utc).isoformat()} {what}\n{traceback.format_exc()}\n")
+            handle.write(f"{datetime.now(timezone.utc).isoformat()} {what}{(': ' + detail) if detail else ''}\n{trace}\n")
     except OSError:
         pass
 
@@ -226,7 +228,9 @@ def cmd_hook_stop(args) -> int:
                     with _SessionLock(session) as mine:
                         if mine:
                             try:
-                                store.ask_jev(conn, session)
+                                done = store.ask_jev(conn, session)
+                                for error in done["errors"]:
+                                    _log("jev", error)
                             except Exception:  # noqa: BLE001 - what Jev didn't read is shown as before
                                 _log("jev")
     except Exception:  # noqa: BLE001 - a hook must never fail the turn
@@ -253,6 +257,9 @@ def cmd_index(args) -> int:
                 if args.jev:
                     done = store.ask_jev(conn, parsed.session_id or Path(path).stem, budget=float("inf"))
                     asked = f", {done['requests']} Jev requests"
+                    for error in done["errors"]:
+                        print(f"{path}: Jev failed on {error}", file=sys.stderr)
+                    failed += bool(done["errors"])
         except (OSError, ValueError, sqlite3.Error, jev.JevError) as error:
             print(f"{path}: skipped ({error})", file=sys.stderr)
             failed += 1

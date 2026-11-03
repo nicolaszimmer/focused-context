@@ -63,13 +63,33 @@ ANSWER_POLICY = (
     "several paragraphs may answer the same part. " + DATA_ONLY
 )
 
-WORDING = hashlib.sha256(json.dumps([MODEL, KINDS_POLICY, KINDS, ANSWER_POLICY]).encode()).hexdigest()[:12]
+KIND_QUESTION = "Does the part with id {pid} in state.parts {ask}? (See state.policy.)"
+KIND_TRUE = "The part with id {pid} {yes}."
+KIND_FALSE = "The part with id {pid} {no}."
+ANSWER_QUESTION = "Does the paragraph with id {pid} in state.paragraphs answer state.part? (See state.policy.)"
+ANSWER_OPTIONS = {
+    "answers": "The paragraph with id {pid} answers state.part.",
+    "partly": "The paragraph with id {pid} answers some of state.part, or only in passing.",
+    "not": "The paragraph with id {pid} does not answer state.part.",
+}
+MESSAGE_CUT = "\n[…the message goes on]"
+MAX_MESSAGE = 40_000     # a message longer than this is shortened in what Jev is shown
 
-Ask = Callable[[dict, dict], dict]
+# Everything Jev reads besides the conversation itself. Any change here changes WORDING.
+WORDED = (MODEL, KINDS_POLICY, KINDS, KIND_QUESTION, KIND_TRUE, KIND_FALSE,
+          ANSWER_POLICY, ANSWER_QUESTION, ANSWER_OPTIONS, MESSAGE_CUT, MAX_MESSAGE)
+WORDING = hashlib.sha256(json.dumps(WORDED).encode()).hexdigest()[:12]
+
+# ask(state, questions, deadline=None) -> answers. deadline is a time.monotonic() value.
+Ask = Callable[..., dict]
 
 
 class JevError(Exception):
     pass
+
+
+class JevTimeout(JevError):
+    """The run's time is up: nothing was asked, or the request was cut short."""
 
 
 def api_key() -> Optional[str]:
@@ -85,31 +105,39 @@ def _context() -> ssl.SSLContext:
     return ssl.create_default_context(cafile=bundle) if bundle else ssl.create_default_context()
 
 
-def http_ask(state: dict, questions: dict, timeout: float = 30) -> dict:
-    """One request; returns its answers, each checked against its question."""
+def http_ask(state: dict, questions: dict, deadline: Optional[float] = None, timeout: float = 30) -> dict:
+    """One request; returns its answers, each checked against its question. With a
+    deadline, no attempt or wait runs past it."""
     key = api_key()
     if not key:
         raise JevError("no OpenRouter key")
     body = json.dumps({"model": MODEL, "state": state, "questions": questions,
                        "provider": {"data_collection": "deny"}}).encode()
     context = _context()
+
+    def left() -> float:
+        return float("inf") if deadline is None else deadline - time.monotonic()
+
     for attempt in range(3):
+        if left() < 1:
+            raise JevTimeout("out of time")
         request = urllib.request.Request(URL, data=body, method="POST", headers={
             "authorization": f"Bearer {key}", "content-type": "application/json"})
         try:
-            with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
+            with urllib.request.urlopen(request, timeout=min(timeout, left()), context=context) as response:
                 parsed = json.loads(response.read())
             break
         except urllib.error.HTTPError as error:
-            if error.code in (408, 429, 500, 502, 503, 504) and attempt < 2:
-                time.sleep(1 + attempt * 2)
-                continue
-            raise JevError(f"HTTP {error.code}: {error.read()[:200]!r}") from error
+            retry = error.code in (408, 429, 500, 502, 503, 504) and attempt < 2
+            failure = JevError(f"HTTP {error.code}: {error.read()[:200]!r}")
         except (urllib.error.URLError, TimeoutError, ValueError) as error:
-            if attempt < 2:
-                time.sleep(1 + attempt * 2)
-                continue
-            raise JevError(str(error)) from error
+            retry, failure = attempt < 2, JevError(str(error))
+        wait = 1 + attempt * 2
+        if not retry:
+            raise failure
+        if left() < wait + 1:
+            raise JevTimeout(f"out of time after: {failure}")
+        time.sleep(wait)
     if parsed.get("error"):
         raise JevError(f"Jev error: {parsed['error']}")
     answers = parsed.get("answers") or {}
@@ -124,19 +152,34 @@ def http_ask(state: dict, questions: dict, timeout: float = 30) -> dict:
     return answers
 
 
-def kinds_request(parts: list) -> tuple:
-    """parts: the message's part texts, in order."""
-    state = {"policy": KINDS_POLICY, "message": "\n".join(parts),
-             "parts": [{"id": f"p{n}", "text": text} for n, text in enumerate(parts, 1)]}
-    questions = {}
-    for n, _ in enumerate(parts, 1):
-        for kind, (ask, yes, no) in KINDS.items():
-            questions[f"{kind}_p{n}"] = {
-                "type": "noul",
-                "instructions": f"Does the part with id p{n} in state.parts {ask}? (See state.policy.)",
-                "criteria": {"true": f"The part with id p{n} {yes}.", "false": f"The part with id p{n} {no}."},
-            }
-    return state, questions
+def _message(parts: list) -> str:
+    message = "\n".join(parts)
+    return message if len(message) <= MAX_MESSAGE else message[:MAX_MESSAGE] + MESSAGE_CUT
+
+
+def kinds_requests(parts: list) -> list:
+    """[(state, questions)] asking the four kind questions about every part, at most
+    MAX_QUESTIONS to a request. Every part is in view while they all fit."""
+    message = _message(parts)
+    listed = [{"id": f"p{n}", "text": text} for n, text in enumerate(parts, 1)]
+    whole = len(message) + sum(len(p["text"]) + 30 for p in listed) + len(KINDS_POLICY) <= MAX_CHARS
+    per = max(1, MAX_QUESTIONS // len(KINDS))
+    requests = []
+    for start in range(0, len(parts), per):
+        batch = listed[start:start + per]
+        state = {"policy": KINDS_POLICY, "message": message if whole else "",
+                 "parts": listed if whole else batch}
+        questions = {}
+        for part in batch:
+            pid = part["id"]
+            for kind, (ask, yes, no) in KINDS.items():
+                questions[f"{kind}_{pid}"] = {
+                    "type": "noul",
+                    "instructions": KIND_QUESTION.format(pid=pid, ask=ask),
+                    "criteria": {"true": KIND_TRUE.format(pid=pid, yes=yes), "false": KIND_FALSE.format(pid=pid, no=no)},
+                }
+        requests.append((state, questions))
+    return requests
 
 
 def read_kinds(answers: dict, count: int) -> list:
@@ -147,7 +190,7 @@ def answer_requests(parts: list, n: int, paragraphs: list, wanted: set) -> list:
     """[(state, questions, {question name: paragraph key})] asking whether each paragraph
     in `wanted` answers part n. paragraphs: [(key, where, text)] in order. Every
     paragraph that fits is in view; a turn too long for one request is read in windows."""
-    message = "\n".join(parts)
+    message = _message(parts)
     windows, current, size = [], [], len(message) + len(parts[n - 1]) + len(ANSWER_POLICY) + 200
     for paragraph in paragraphs:
         cost = len(paragraph[2]) + len(paragraph[1]) + 40
@@ -171,12 +214,8 @@ def answer_requests(parts: list, n: int, paragraphs: list, wanted: set) -> list:
                 names[f"answers_{pid}"] = key
                 questions[f"answers_{pid}"] = {
                     "type": "choice",
-                    "instructions": f"Does the paragraph with id {pid} in state.paragraphs answer state.part? (See state.policy.)",
-                    "criteria": {
-                        "answers": f"The paragraph with id {pid} answers state.part.",
-                        "partly": f"The paragraph with id {pid} answers some of state.part, or only in passing.",
-                        "not": f"The paragraph with id {pid} does not answer state.part.",
-                    },
+                    "instructions": ANSWER_QUESTION.format(pid=pid),
+                    "criteria": {option: text.format(pid=pid) for option, text in ANSWER_OPTIONS.items()},
                 }
             requests.append((state, questions, names))
     return requests

@@ -273,15 +273,16 @@ def _index_parts(conn: sqlite3.Connection, session_id: str, parsed: Transcript) 
                     seq += 1
                     key = f"{source.key}:{i}.{m}"
                     seen.add(key)
-                    row = conn.execute("SELECT text FROM paras WHERE session_id = ? AND para_key = ?",
+                    row = conn.execute("SELECT text, seq, place FROM paras WHERE session_id = ? AND para_key = ?",
                                        (session_id, key)).fetchone()
                     if row is None:
                         conn.execute(
                             "INSERT INTO paras (session_id, para_key, turn_key, source_key, seq, place, started_at, text) "
                             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                             (session_id, key, turn.key, source.key, seq, where, source.started_at, text))
-                    elif row[0] != text:
-                        conn.execute("DELETE FROM pairs WHERE session_id = ? AND para_key = ?", (session_id, key))
+                    elif tuple(row) != (text, seq, where):
+                        if row[0] != text:  # a different paragraph now: Jev's answers about it no longer hold
+                            conn.execute("DELETE FROM pairs WHERE session_id = ? AND para_key = ?", (session_id, key))
                         conn.execute("UPDATE paras SET text = ?, seq = ?, place = ? WHERE session_id = ? AND para_key = ?",
                                      (text, seq, where, session_id, key))
         stale = [row[0] for row in conn.execute(
@@ -311,55 +312,69 @@ def prune(conn: sqlite3.Connection, now: Optional[datetime] = None) -> int:
 def ask_jev(conn: sqlite3.Connection, session_id: str, ask: jev.Ask = jev.http_ask,
             budget: float = 90.0, clock=None) -> dict:
     """Ask Jev what it hasn't been asked about this session yet, latest turn first, until
-    `budget` seconds are spent; the next run goes on from there. Answers are kept per
-    wording, so a reworded question is asked again rather than reused."""
+    `budget` seconds are spent; the next run goes on from there. Every request gets the
+    deadline, so a slow one can't run past it. A turn Jev fails on is noted in
+    "errors" and skipped, so it can't hold up the others. Answers are kept per wording,
+    so a reworded question is asked again rather than reused."""
     import time
     clock = clock or time.monotonic
-    started = clock()
-    done = {"requests": 0, "kinds": 0, "pairs": 0, "complete": True}
+    started, deadline = clock(), time.monotonic() + budget
+    done = {"requests": 0, "kinds": 0, "pairs": 0, "complete": True, "errors": []}
+
+    def call(state, questions):
+        if clock() - started > budget:
+            raise jev.JevTimeout("out of time")
+        done["requests"] += 1
+        return ask(state, questions, deadline=deadline)
+
     turns = [row[0] for row in conn.execute(
         "SELECT p.turn_key FROM parts p JOIN turns t ON t.session_id = p.session_id AND t.turn_key = p.turn_key "
         "WHERE p.session_id = ? GROUP BY p.turn_key ORDER BY MAX(t.seq) DESC", (session_id,))]
     for turn_key in turns:
-        rows = conn.execute("SELECT n, text, kinds, wording FROM parts WHERE session_id = ? AND turn_key = ? ORDER BY n",
-                            (session_id, turn_key)).fetchall()
-        texts = [row[1] for row in rows]
-        if any(row[2] is None or row[3] != jev.WORDING for row in rows):
-            if clock() - started > budget:
-                done["complete"] = False
-                return done
-            state, questions = jev.kinds_request(texts)
-            kinds = jev.read_kinds(ask(state, questions), len(texts))
-            done["requests"] += 1
-            with conn:
-                conn.executemany("UPDATE parts SET kinds = ?, wording = ? WHERE session_id = ? AND turn_key = ? AND n = ?",
-                                 [(json.dumps(k), jev.WORDING, session_id, turn_key, n) for n, k in enumerate(kinds, 1)])
-            done["kinds"] += len(texts)
-        paras = [(row[0], row[1], row[2]) for row in conn.execute(
-            "SELECT para_key, place, text FROM paras WHERE session_id = ? AND turn_key = ? ORDER BY seq",
-            (session_id, turn_key))]
-        if not paras:
-            continue
-        for n in range(1, len(texts) + 1):
-            asked = {row[0] for row in conn.execute(
-                "SELECT para_key FROM pairs WHERE session_id = ? AND turn_key = ? AND n = ? AND wording = ?",
-                (session_id, turn_key, n, jev.WORDING))}
-            wanted = {key for key, _, _ in paras if key not in asked}
-            for state, questions, names in jev.answer_requests(texts, n, paras, wanted) if wanted else []:
-                if clock() - started > budget:
-                    done["complete"] = False
-                    return done
-                answers = ask(state, questions)
-                done["requests"] += 1
-                with conn:
-                    conn.executemany(
-                        "INSERT INTO pairs (session_id, turn_key, n, para_key, answers, partly, wording) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (session_id, turn_key, n, para_key) DO UPDATE SET "
-                        "answers = excluded.answers, partly = excluded.partly, wording = excluded.wording",
-                        [(session_id, turn_key, n, key, float(answers[name]["probabilities"]["answers"]),
-                          float(answers[name]["probabilities"]["partly"]), jev.WORDING) for name, key in names.items()])
-                done["pairs"] += len(names)
+        try:
+            _ask_turn(conn, session_id, turn_key, call, done)
+        except jev.JevTimeout:
+            done["complete"] = False
+            return done
+        except jev.JevError as error:
+            done["complete"] = False
+            done["errors"].append(f"turn {turn_key}: {error}")
     return done
+
+
+def _ask_turn(conn: sqlite3.Connection, session_id: str, turn_key: str, call, done: dict) -> None:
+    rows = conn.execute("SELECT n, text, kinds, wording FROM parts WHERE session_id = ? AND turn_key = ? ORDER BY n",
+                        (session_id, turn_key)).fetchall()
+    texts = [row[1] for row in rows]
+    if any(row[2] is None or row[3] != jev.WORDING for row in rows):
+        answers: dict = {}
+        for state, questions in jev.kinds_requests(texts):
+            answers.update(call(state, questions))
+        kinds = jev.read_kinds(answers, len(texts))
+        with conn:
+            conn.executemany("UPDATE parts SET kinds = ?, wording = ? WHERE session_id = ? AND turn_key = ? AND n = ?",
+                             [(json.dumps(k), jev.WORDING, session_id, turn_key, n) for n, k in enumerate(kinds, 1)])
+        done["kinds"] += len(texts)
+    paras = [(row[0], row[1], row[2]) for row in conn.execute(
+        "SELECT para_key, place, text FROM paras WHERE session_id = ? AND turn_key = ? ORDER BY seq",
+        (session_id, turn_key))]
+    if not paras:
+        return
+    for n in range(1, len(texts) + 1):
+        asked = {row[0] for row in conn.execute(
+            "SELECT para_key FROM pairs WHERE session_id = ? AND turn_key = ? AND n = ? AND wording = ?",
+            (session_id, turn_key, n, jev.WORDING))}
+        wanted = {key for key, _, _ in paras if key not in asked}
+        for state, questions, names in jev.answer_requests(texts, n, paras, wanted) if wanted else []:
+            answers = call(state, questions)
+            with conn:
+                conn.executemany(
+                    "INSERT INTO pairs (session_id, turn_key, n, para_key, answers, partly, wording) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (session_id, turn_key, n, para_key) DO UPDATE SET "
+                    "answers = excluded.answers, partly = excluded.partly, wording = excluded.wording",
+                    [(session_id, turn_key, n, key, float(answers[name]["probabilities"]["answers"]),
+                      float(answers[name]["probabilities"]["partly"]), jev.WORDING) for name, key in names.items()])
+            done["pairs"] += len(names)
 
 
 def turn_views(conn: sqlite3.Connection, session_id: str) -> dict:

@@ -8,6 +8,7 @@ import io
 import json
 import os
 import sys
+import time
 import unittest
 from contextlib import closing, redirect_stdout
 from pathlib import Path
@@ -28,7 +29,7 @@ class FakeJev:
     def __init__(self):
         self.requests = []
 
-    def __call__(self, state, questions):
+    def __call__(self, state, questions, deadline=None):
         self.requests.append((state, questions))
         answers = {}
         for name, question in questions.items():
@@ -70,7 +71,7 @@ class PartsTest(unittest.TestCase):
 
 class WordingTest(unittest.TestCase):
     def test_the_measured_wording(self):
-        state, questions = jev.kinds_request(["keep it and merge it"])
+        [(state, questions)] = jev.kinds_requests(["keep it and merge it"])
         self.assertEqual(sorted(questions), ["decision_p1", "information_p1", "instruction_p1", "question_p1"])
         self.assertEqual(questions["decision_p1"]["instructions"],
                          "Does the part with id p1 in state.parts settle a choice that was open, such as one "
@@ -90,11 +91,32 @@ class WordingTest(unittest.TestCase):
     def test_an_incomplete_answer_is_an_error(self):
         response = mock.MagicMock()
         response.__enter__.return_value.read.return_value = json.dumps({"answers": {"question_p1": {"type": "noul"}}}).encode()
-        state, questions = jev.kinds_request(["a"])
+        [(state, questions)] = jev.kinds_requests(["a"])
         with mock.patch.dict(os.environ, {"FOCUSED_OPENROUTER_API_KEY": "k"}), \
                 mock.patch("urllib.request.urlopen", return_value=response):
             with self.assertRaises(jev.JevError):
                 jev.http_ask(state, {"question_p1": questions["question_p1"]})
+
+    def test_every_template_is_in_the_wording_digest(self):
+        for template in (jev.KIND_QUESTION, jev.KIND_TRUE, jev.KIND_FALSE, jev.ANSWER_QUESTION, jev.ANSWER_OPTIONS):
+            self.assertIn(template, jev.WORDED)
+
+    def test_kinds_are_asked_in_batches_and_a_long_message_is_shortened(self):
+        parts = [f"part number {n}." for n in range(1, 13)]
+        requests = jev.kinds_requests(parts)
+        self.assertEqual([len(q) for _, q in requests], [40, 8])
+        self.assertEqual(len(requests[1][0]["parts"]), 12)  # all in view while they fit
+        with mock.patch.object(jev, "MAX_MESSAGE", 20):
+            [(state, _)] = jev.kinds_requests(["x" * 30])
+            self.assertEqual(state["message"], "x" * 20 + jev.MESSAGE_CUT)
+
+    def test_no_request_starts_after_the_deadline(self):
+        [(state, questions)] = jev.kinds_requests(["a"])
+        with mock.patch.dict(os.environ, {"FOCUSED_OPENROUTER_API_KEY": "k"}), \
+                mock.patch("urllib.request.urlopen") as urlopen:
+            with self.assertRaises(jev.JevTimeout):
+                jev.http_ask(state, questions, deadline=time.monotonic() - 1)
+        urlopen.assert_not_called()
 
     def test_off_unless_switched_on_with_a_key(self):
         with mock.patch.dict(os.environ, {"FOCUSED_JEV": "", "OPENROUTER_API_KEY": "k"}):
@@ -168,6 +190,44 @@ class JevIndexTest(Fixture):
         rest = store.ask_jev(conn, "s1", ask=FakeJev())
         self.assertTrue(rest["complete"])
         self.assertGreater(rest["requests"], 0)
+
+    def test_a_turn_jev_fails_on_does_not_hold_up_the_others(self):
+        conn = self.index()
+        fake = FakeJev()
+
+        def flaky(state, questions, deadline=None):
+            if "a prompt with no origin" in state.get("message", ""):  # the newest turn, read first
+                raise jev.JevError("HTTP 400: too large")
+            return fake(state, questions)
+
+        done = store.ask_jev(conn, "s1", ask=flaky)
+        self.assertFalse(done["complete"])
+        self.assertEqual(len(done["errors"]), 1)
+        self.assertIn("HTTP 400", done["errors"][0])
+        views = store.turn_views(conn, "s1")
+        self.assertTrue(views["u2"]["complete"])
+        self.assertTrue(views["u1"]["complete"])
+        self.assertIsNone(conn.execute("SELECT kinds FROM parts WHERE turn_key = 'old'").fetchone()[0])
+
+    def test_running_out_of_time_mid_request_ends_the_run(self):
+        conn = self.index()
+
+        def slow(state, questions, deadline=None):
+            raise jev.JevTimeout("out of time")
+
+        done = store.ask_jev(conn, "s1", ask=slow)
+        self.assertEqual((done["complete"], done["errors"]), (False, []))
+
+    def test_paragraphs_keep_their_order_when_one_is_added_before_others(self):
+        self.index()
+        grown = list(SESSION)
+        at = next(i for i, e in enumerate(grown) if e.get("uuid") == "w1")
+        grown.insert(at, assistant(text("Also this.")))
+        self.write(grown)
+        conn = self.index()
+        order = [r[0] for r in conn.execute("SELECT text FROM paras WHERE turn_key = 'u1' ORDER BY seq")]
+        self.assertEqual(order, ["Looking.", "Hooks only add context.", "Also this.", "No action needed.",
+                                 "Deleted the cache folder."])
 
     def test_new_wording_is_asked_again(self):
         conn = self.index()

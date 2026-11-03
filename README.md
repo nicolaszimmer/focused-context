@@ -103,9 +103,11 @@ Code ignores `--marketplace`. If adding the marketplace fails, your git can't
 read the repository: it has to be public, or your git needs GitHub credentials.
 
 **Installed for your user, the plugin indexes every project on that machine.**
-What it stores per turn is your prompt, Claude's final answer, the paths of
-files edited, commit hashes and pull request URLs: no tool output and no file
-contents. To leave a sensitive repository out, run this in it:
+What it stores per turn is your message, also split into its parts; every
+paragraph Claude wrote, wake-up replies included; and the paths of files edited,
+commit hashes and pull request URLs. No tool output and no file contents. With
+Jev switched on, the parts and paragraphs are also sent to OpenRouter (see "Jev").
+To leave a sensitive repository out, run this in it:
 
 ```
 claude plugin disable focused@focused-context --scope local
