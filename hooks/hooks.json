@@ -20,6 +20,28 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/focused.py\" hook session-start"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/focused.py\" hook prompt",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }

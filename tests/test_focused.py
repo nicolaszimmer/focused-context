@@ -341,6 +341,7 @@ class HeadlessAndCommandTest(unittest.TestCase):
         from focused.transcript import is_own_command
         self.assertTrue(is_own_command("/focused-find sky"))
         self.assertTrue(is_own_command("/focused-answers"))
+        self.assertTrue(is_own_command("/focused-context --full"))
         self.assertTrue(is_own_command("/focused-find\tsky"))
         self.assertTrue(is_own_command("/focused-answers\n\n(sent while Claude was working) also this"))
         self.assertFalse(is_own_command("/focused-answersx"))
@@ -382,12 +383,16 @@ class PluginTest(unittest.TestCase):
         market = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())
         hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text())["hooks"]
         self.assertEqual(market["plugins"][0]["name"], plugin["name"])
-        self.assertEqual(set(hooks), {"Stop", "SessionEnd"})
+        self.assertEqual(set(hooks), {"Stop", "SessionEnd", "SessionStart", "UserPromptSubmit"})
+        self.assertEqual(hooks["SessionStart"][0]["matcher"], "clear|compact")
+        prompt = hooks["UserPromptSubmit"][0]["hooks"][0]
+        self.assertTrue(prompt["command"].endswith(" hook prompt"))
+        self.assertNotIn("async", prompt)  # only a hook in the foreground can stop a message
         for event in hooks.values():
             for hook in event[0]["hooks"]:
                 self.assertIn("${CLAUDE_PLUGIN_ROOT}/scripts/focused.py", hook["command"])
         self.assertTrue((ROOT / "scripts" / "focused.py").exists())
-        for skill in ("answers", "find"):
+        for skill in ("answers", "find", "context"):
             body = (ROOT / "skills" / skill / "SKILL.md").read_text()
             self.assertIn("disable-model-invocation: true", body)
             self.assertIn('--in-session "${CLAUDE_SESSION_ID}"', body)
