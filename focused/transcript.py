@@ -141,6 +141,7 @@ class Transcript:
     session_id: Optional[str]
     turns: list
     shares: Counter
+    title: Optional[str] = None  # the session's title as Claude Code names it (its latest ai-title)
 
 
 def load(path) -> Iterator[dict]:
@@ -166,6 +167,7 @@ def parse_entries(entries: Iterable[dict]) -> Transcript:
     turns: list = []
     tools: dict = {}
     session_id = None
+    title = None
     current: Optional[Turn] = None
     last_listed: Optional[Turn] = None
 
@@ -191,6 +193,9 @@ def parse_entries(entries: Iterable[dict]) -> Transcript:
             continue
         session_id = session_id or entry.get("sessionId")
         kind = entry.get("type")
+        if kind == "ai-title":
+            title = str(entry.get("aiTitle") or "").strip() or title
+            continue
 
         if kind == "attachment":
             attachment = entry.get("attachment") or {}
@@ -259,7 +264,7 @@ def parse_entries(entries: Iterable[dict]) -> Transcript:
             shares["assistant narration (text before the answer)"] += sum(tokens(t) for t in turn.narration)
         else:
             shares["assistant replies to synthetic turns"] += sum(tokens(t) for t in turn.replies)
-    return Transcript(session_id=session_id, turns=turns, shares=shares)
+    return Transcript(session_id=session_id, turns=turns, shares=shares, title=title)
 
 
 def _note_result(turn: Turn, tool, content) -> None:

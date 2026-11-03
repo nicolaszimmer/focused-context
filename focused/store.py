@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
     transcript_path TEXT,
     first_at TEXT,
-    last_at TEXT
+    last_at TEXT,
+    title TEXT
 );
 CREATE TABLE IF NOT EXISTS turns (
     id INTEGER PRIMARY KEY,
@@ -104,6 +105,13 @@ CREATE TRIGGER IF NOT EXISTS paras_au AFTER UPDATE ON paras BEGIN
     INSERT INTO paras_fts (paras_fts, rowid, text) VALUES ('delete', old.id, old.text);
     INSERT INTO paras_fts (rowid, text) VALUES (new.id, new.text);
 END;
+-- What the hosted index holds (focused/remote.py): each turn's digest as last pushed.
+CREATE TABLE IF NOT EXISTS pushed (
+    session_id TEXT NOT NULL,
+    turn_key TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    PRIMARY KEY (session_id, turn_key)
+);
 """
 
 # A turn's answer from the Stop hook is the final text Claude Code reports.
@@ -179,6 +187,8 @@ def connect(path) -> sqlite3.Connection:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(SCHEMA)
+        if "title" not in {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}:
+            conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT")  # an index made before 0.6.0
     finally:
         os.umask(old)
     for suffix in ("", "-wal", "-shm"):  # also tightens files made before this rule
@@ -235,10 +245,11 @@ def index_transcript(conn: sqlite3.Connection, path, stop_message: Optional[str]
             _index_parts(conn, session_id, parsed)
         stamps = [t.started_at for t in parsed.turns if t.started_at]
         conn.execute(
-            "INSERT INTO sessions (session_id, transcript_path, first_at, last_at) VALUES (?, ?, ?, ?) "
+            "INSERT INTO sessions (session_id, transcript_path, first_at, last_at, title) VALUES (?, ?, ?, ?, ?) "
             "ON CONFLICT (session_id) DO UPDATE SET transcript_path = excluded.transcript_path, "
-            "first_at = excluded.first_at, last_at = excluded.last_at",
-            (session_id, str(path), min(stamps, default=None), max(stamps, default=None)))
+            "first_at = excluded.first_at, last_at = excluded.last_at, "
+            "title = COALESCE(excluded.title, sessions.title)",
+            (session_id, str(path), min(stamps, default=None), max(stamps, default=None), parsed.title))
         prune(conn, now=now)
     return parsed
 
@@ -306,6 +317,10 @@ def prune(conn: sqlite3.Connection, now: Optional[datetime] = None) -> int:
     within the period goes too, even if its project's index is never opened again."""
     cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=retention_days())
     stamp = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
+    # Retention is each side's own: a turn deleted for its age isn't named gone in the
+    # next push (remote.py), so the hosted index keeps it for as long as it keeps turns.
+    conn.execute("DELETE FROM pushed WHERE EXISTS (SELECT 1 FROM turns t WHERE t.session_id = pushed.session_id "
+                 "AND t.turn_key = pushed.turn_key AND t.started_at < ?)", (stamp,))
     removed = conn.execute("DELETE FROM turns WHERE started_at < ?", (stamp,)).rowcount
     gone = [row[0] for row in conn.execute(
         "SELECT session_id FROM sessions WHERE session_id NOT IN (SELECT DISTINCT session_id FROM turns)")]
@@ -433,6 +448,17 @@ def turn_views(conn: sqlite3.Connection, session_id: str) -> dict:
     return views
 
 
+def name(session_id: str, title: Optional[str]) -> str:
+    """How focused names a session to a person: by its title, as Claude Code names it, with
+    the start of its id, which also names it."""
+    return f"“{title}” ({session_id[:8]})" if title else f"session {session_id[:8]}"
+
+
+def session_name(conn: sqlite3.Connection, session_id: str) -> str:
+    row = conn.execute("SELECT title FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    return name(session_id, row[0] if row else None)
+
+
 def latest_session(conn: sqlite3.Connection) -> Optional[str]:
     row = conn.execute("SELECT session_id FROM sessions ORDER BY last_at DESC LIMIT 1").fetchone()
     return row["session_id"] if row else None
@@ -451,8 +477,9 @@ def search(conn: sqlite3.Connection, words: list, limit: int = 10) -> list:
     # function the list does, so the two can't disagree on which turns those are.
     conn.create_function("is_own_command", 1, is_own_command, deterministic=True)
     return conn.execute(
-        "SELECT t.*, snippet(turns_fts, -1, '[', ']', ' … ', 12) AS hit "
+        "SELECT t.*, s.title, snippet(turns_fts, -1, '[', ']', ' … ', 12) AS hit "
         "FROM turns_fts JOIN turns t ON t.id = turns_fts.rowid "
+        "LEFT JOIN sessions s ON s.session_id = t.session_id "
         "WHERE turns_fts MATCH ? AND NOT is_own_command(t.prompt) "
         "ORDER BY rank LIMIT ?",
         (query, limit)).fetchall()
@@ -465,8 +492,10 @@ def search_paras(conn: sqlite3.Connection, words: list, limit: int = 10) -> list
     if not query:
         return []
     return conn.execute(
-        "SELECT p.session_id, p.turn_key, p.started_at, t.prompt, snippet(paras_fts, -1, '[', ']', ' … ', 12) AS hit "
+        "SELECT p.session_id, p.turn_key, p.started_at, t.prompt, s.title, "
+        "snippet(paras_fts, -1, '[', ']', ' … ', 12) AS hit "
         "FROM paras_fts JOIN paras p ON p.id = paras_fts.rowid "
         "JOIN turns t ON t.session_id = p.session_id AND t.turn_key = p.turn_key "
+        "LEFT JOIN sessions s ON s.session_id = p.session_id "
         "WHERE paras_fts MATCH ? ORDER BY rank LIMIT ?",
         (query, limit)).fetchall()

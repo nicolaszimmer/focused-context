@@ -23,6 +23,7 @@ You [question]: What would be the implications?
 (An excerpt of a real session, lines shortened; that message had three more answer
 paragraphs.)
 
+How the parts fit, what is built and what is planned: [ARCHITECTURE.md](ARCHITECTURE.md).
 Design notes, measurements and the labelling tools live in
 [focused-context-lab](https://github.com/nicolaszimmer/focused-context-lab)
 (private).
@@ -101,6 +102,17 @@ detail matters.
   full summary over 25,000 characters is read from its file instead, since the
   Bash tool returns at most 30,000 by default. The command may read files in
   `~/.claude/focused/summaries/` without asking, and no others.
+- **In a session where nothing has been said yet**, `/focused:context` shows the
+  session `/clear` just ended, if it did. Otherwise it doesn't guess, since a new
+  session doesn't always continue the latest one: it asks which to show, offering the
+  project's three latest sessions by their titles (as Claude Code names them), with the
+  time, number of messages and first message of each, and a field for typing another
+  session's title.
+- **A session is named by its title.** `/focused:context <title>` shows that session:
+  its title, or some of its words in any case and order, name it, as does its id or
+  the first 8 characters of its id. When several sessions fit, it asks which, the same
+  way. The summary, `/focused:answers` and `/focused:find` name each session by its
+  title, with the start of its id.
 
 Before building the summary, the hook re-reads the transcript into the index, which
 takes under a second. It asks Jev nothing, so it stays quick, and if the re-read
@@ -145,6 +157,45 @@ Original prompt: Reply with just the word two.
 - A prompt sent with `claude -p --resume` to a large session idle for an hour is
   stopped too: the hook can't tell it from a typed one.
 
+## The hosted index
+
+A cloud session's container is reclaimed after a while, and the next session starts with
+an empty `~/.claude/focused`. The hosted index keeps the index where every session can
+read it: [focused-context-worker](https://github.com/nicolaszimmer/focused-context-worker),
+a Cloudflare Worker with a D1 database, on your own Cloudflare account
+(`focused/remote.py`).
+
+**It is off until you set it up**, as it sends the same text the local index holds to
+your Worker. Deploy the Worker (its README has the steps), then set both in the
+environment Claude Code runs in, for a cloud environment among its environment variables:
+
+```
+FOCUSED_REMOTE_URL=https://focused-context.<your-subdomain>.workers.dev
+FOCUSED_REMOTE_TOKEN=<the Worker's FOCUSED_TOKEN>
+```
+
+A cloud environment also needs to reach the Worker: under **Network access** in the
+environment's settings, add its host to the allowed domains, or choose a broader level.
+
+- **Pushing:** the `Stop` hook pushes the session after each turn, after Jev; `SessionEnd`
+  for up to 8 seconds; `focused index` each session it indexes, so `focused index --all`
+  fills the hosted index from this machine's transcripts. A push carries only the turns
+  whose rows changed since the last one, in pieces of about 512 KB, and names the turns
+  deleted here, so they go there too. A piece the Worker took is noted at once: a push cut
+  short goes on from there next time.
+- **Reading back:** the sessions `/focused-context` offers in a new session include the
+  hosted index's, so a new container offers those of earlier containers, and the one
+  chosen is read into this machine's index. `focused answers --session <title>` and
+  `focused context --session <title>` read a session this machine doesn't have the same
+  way. `/focused-find` adds the matches from sessions not on this machine.
+- **Retention is each side's own:** a turn deleted here for its age isn't deleted there.
+  The Worker deletes turns older than its `RETENTION_DAYS` (30).
+- **If it fails** (no network, a wrong token), the hooks write it to
+  `~/.claude/focused/errors.log` and the local index carries on; the commands say so in
+  one line. A turn larger than D1 keeps in a row (2 MB) isn't pushed, and is logged.
+- The URL must be https, except to this machine (`http://127.0.0.1`, for `wrangler dev`),
+  so the token never goes over the network in the clear.
+
 ## Storage
 
 - Claude Code already keeps every session as JSONL under
@@ -154,10 +205,11 @@ Original prompt: Reply with just the word two.
 - One database per project, `~/.claude/focused/<project>.sqlite`, where
   `<project>` is Claude Code's own folder name for the project. It is readable
   by its owner only.
-- Tables: `sessions`; `turns`, with full-text search on prompt and final
+- Tables: `sessions`, with each session's title; `turns`, with full-text search on prompt and final
   answer; `parts` of your messages, with Jev's kinds; `paras`, every paragraph
   Claude wrote, with full-text search; and `pairs`, Jev's answer for each part
-  and paragraph.
+  and paragraph; and `pushed`, the digest of each turn as last pushed to the
+  hosted index.
 - Beside the databases: `summaries/<session>.md`, the full summary of each
   session summarized, and `idle/<session>`, the note that a message was stopped
   after an hour without a reply.
@@ -253,7 +305,7 @@ From the settings, plugin and cloud-session docs (code.claude.com/docs, read
 | Surface | Does indexing run? | Does the index persist? |
 |---|---|---|
 | Terminal, VS Code and JetBrains extensions, desktop app (local) | Yes, with the plugin installed for your user | Yes, in `~/.claude/focused/` |
-| Cloud session, any number of repositories | Yes, with focused installed by the environment's setup script; see "Cloud environments" below. Cloud sessions install neither the plugins in your user settings nor those a repository declares | No. The VM is reclaimed after inactivity. The conversation is restored on reopen, so the index can be rebuilt (not yet verified that the transcript file is restored at the same path) |
+| Cloud session, any number of repositories | Yes, with focused installed by the environment's setup script; see "Cloud environments" below. Cloud sessions install neither the plugins in your user settings nor those a repository declares | Not on the VM, which is reclaimed after inactivity. With the hosted index set up, yes, in your Worker; see "The hosted index" above |
 | Cloud session with one repository, without the setup script | Only if that repository's committed `.claude/settings.json` runs focused; see "One repository's own setup" below | As above |
 | A thread in a project | No. Threads read neither repository hooks nor, as far as the docs say, the environment's | No. The command still works when run by hand |
 
@@ -344,6 +396,12 @@ Made on 2026-11-03 by the maintainer:
 - The index and a ledger of decisions, to-dos and findings will be hosted on the
   maintainer's Cloudflare account, in a Worker in its own repository. New Jev questions
   for it ship switched off and are judged by their output.
+- `/focused-context` in a session where nothing has been said yet doesn't load the
+  latest session on a guess, as not every session continues the last one's objective:
+  it offers the project's three latest sessions, and a field for any other, as Claude
+  Code's own questions do. Right after `/clear` it still shows the session cleared.
+- Sessions are named by their titles, as Claude Code names them: a person names one by
+  its title, and focused shows each by its title.
 
 Open:
 
@@ -352,3 +410,6 @@ Open:
    suggestion, not yet confirmed.
 3. The limit on the summary loaded after `/clear` and compaction: 9,500
    characters, set by Claude under Claude Code's 10,000.
+4. Which sessions count as one project: every cloud session with more than one
+   repository runs in `/home/user`, so all of them share the project `-home-user`, and
+   the hosted index's "latest session" and search span all of them.

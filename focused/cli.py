@@ -12,6 +12,10 @@ With FOCUSED_JEV=1 and an OpenRouter key, the Stop hook also asks Jev what each 
 of a message does and which paragraphs answer it (focused/jev.py); `answers` then lists
 the parts with their answers. Without it, each turn shows its final text, as before.
 
+With FOCUSED_REMOTE_URL and FOCUSED_REMOTE_TOKEN, the hooks and `index` also push each
+session to the hosted index (focused/remote.py); `answers --session` and `context` read
+a session from it when this machine has none, and `find` searches it too.
+
 From a skill, pass --in-session <id>: focused reindexes that session's transcript, uses
 its project's index, and reports every problem on stdout with exit code 0, so the skill
 shows it instead of failing.
@@ -24,6 +28,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -34,7 +39,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from . import idle, install, jev, store, summary
+from . import idle, install, jev, remote, store, summary
 from .transcript import LISTED, is_own_command
 
 
@@ -156,13 +161,83 @@ def _db_for_session(session: str) -> Path:
             print(f"focused: could not refresh the index ({error}); answering from the existing one.\n")
         return db
     for db in sorted(store.home().glob("*.sqlite")):  # the transcript is gone, the index may not be
-        try:
-            with closing(sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)) as conn:
-                if conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session,)).fetchone():
-                    return db
-        except sqlite3.Error:
-            continue
+        if _holds(db, session):
+            return db
     return store.db_for_cwd(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+
+
+def _holds(db: Path, session: str) -> bool:
+    """Whether an index holds turns of a session; read-only, so a missing index stays missing."""
+    try:
+        # resolve(): a relative --db can't be written as a file URI.
+        with closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
+            return conn.execute("SELECT 1 FROM turns WHERE session_id = ? LIMIT 1", (session,)).fetchone() is not None
+    except (sqlite3.Error, ValueError):
+        return False
+
+
+PLAIN_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
+SHORTEST_PREFIX = 8  # `find` shows a session by its first 8 characters
+
+
+def _named(args, db: Path, named: Optional[str]) -> Optional[str]:
+    """The id of the session `named` names: its id, the start of its id (8 characters or
+    more), its title, or words of its title, among this project's sessions here and in
+    the hosted index. When several match, they are printed as a choice (`_print_choice`,
+    which the context skill offers) and None is returned. When none matches, `named` is
+    returned as it is: an id another index or the hosted index may hold."""
+    if not named or (PLAIN_ID.fullmatch(named) and _holds(db, named)):
+        return named
+    with closing(store.connect(db)) as conn:
+        rows, problem = _sessions(conn, db, title=named, any_project=bool(PLAIN_ID.fullmatch(named)))
+    key, words = named.casefold(), named.casefold().split()
+
+    def title(row) -> str:
+        # A title names a session of this project only; other projects' sessions, listed
+        # for an id's start, are named by their id.
+        here = row.get("project", db.stem) == db.stem
+        return (row.get("title") or "").casefold() if here else ""
+
+    for matches in (lambda row: row["session_id"] == named,
+                    lambda row: len(named) >= SHORTEST_PREFIX and row["session_id"].startswith(named),
+                    lambda row: bool(title(row)) and title(row) == key,
+                    lambda row: bool(words) and all(word in title(row) for word in words)):
+        found = [row for row in rows if matches(row)]
+        if len(found) == 1:
+            return found[0]["session_id"]
+        if found:
+            _print_choice(found, f"{CHOOSE} {len(found)} sessions match “{named}”. The latest:")
+            return None
+    if problem:
+        print(problem + "\n")
+    return named
+
+
+def _with_session(args, db: Path, session: Optional[str]) -> Path:
+    """The index that holds `session`: this project's, another one on this machine, or
+    the one its rows are read into from the hosted index (its own project's, or --db).
+    Without any, this project's, which then says it has no such session."""
+    if not session:
+        return db
+    if _holds(db, session):
+        return db
+    if not args.db:
+        for other in sorted(store.home().glob("*.sqlite")):
+            if other != db and _holds(other, session):
+                return other
+    try:
+        if remote.settings() is None:
+            return db
+        data = remote.fetch(session)
+        if data is None:
+            return db
+        target = db if args.db else store.home() / f"{data['project']}.sqlite"
+        with closing(store.connect(target)) as conn:
+            remote.save(conn, session, data)
+        return target
+    except (remote.RemoteError, sqlite3.Error) as error:
+        print(f"focused: could not read session {session} from the hosted index ({error}).\n")
+        return db
 
 
 def _fail(args, message: str, code: int) -> int:
@@ -233,16 +308,34 @@ def _cleared(db: Path) -> Optional[str]:
     return note.get("session") if fresh and note.get("db") == str(db) else None
 
 
-def _previous_session(conn, db: Path, current: Optional[str]) -> Optional[str]:
-    """The session /clear just ended (its SessionEnd note), else the project's most
-    recent other session, re-read so its last turns are in."""
-    target = _cleared(db) or next((row[0] for row in conn.execute(
-        "SELECT session_id FROM sessions WHERE session_id IS NOT ? ORDER BY last_at DESC LIMIT 1",
-        (current,))), None)
+def _previous_session(conn, db: Path, current: Optional[str], guess: bool = True) -> Optional[str]:
+    """The session /clear just ended (its SessionEnd note), else, with `guess`, the
+    project's most recent other session on this machine; re-read so its last turns are in."""
+    target = _cleared(db)
+    if target is None and guess:
+        target = next((row[0] for row in conn.execute(
+            "SELECT session_id FROM sessions WHERE session_id IS NOT ? ORDER BY last_at DESC LIMIT 1",
+            (current,))), None)
     row = conn.execute("SELECT transcript_path FROM sessions WHERE session_id = ?", (target,)).fetchone()
     if row and row[0]:
         _reindex(conn, row[0])  # its last turns, if the Stop hook hadn't got to them
     return target
+
+
+def _push(conn, session: str, transcript, timeout: float) -> Optional[str]:
+    """Push what changed in a session to the hosted index, if one is set up. Returns
+    what went wrong, also written to the log, or None."""
+    try:
+        if remote.settings() is None:
+            return None
+        done = remote.push(conn, session, Path(transcript).parent.name, timeout=timeout)
+        for key in done["skipped"]:
+            _log("push", f"session {session}: turn {key} is larger than a push can carry")
+        return None
+    except (remote.RemoteError, sqlite3.Error) as error:
+        failure = f"session {session}: {error}"
+    _log("push", failure)
+    return failure
 
 
 def _reindex(conn, path) -> None:
@@ -337,12 +430,12 @@ def cmd_hook_stop(args) -> int:
             stop_message = payload.get("last_assistant_message")
             with closing(store.connect(_db(args, path))) as conn:
                 parsed = store.index_transcript(conn, path, stop_message=stop_message)
+                session = parsed.session_id or Path(path).stem
                 if args.event == "stop" and jev.enabled():
                     wanted = (stop_message or "").strip()
                     if wanted and not any(wanted == reply.strip() for t in parsed.turns for reply in t.replies):
                         time.sleep(2)  # the transcript may not hold the final message yet
                         parsed = store.index_transcript(conn, path, stop_message=stop_message)
-                    session = parsed.session_id or Path(path).stem
                     with _SessionLock(session) as mine:
                         if mine:
                             try:
@@ -351,6 +444,8 @@ def cmd_hook_stop(args) -> int:
                                     _log("jev", error)
                             except Exception:  # noqa: BLE001 - what Jev didn't read is shown as before
                                 _log("jev")
+                # SessionEnd's time is short; what it can't push, the next push sends.
+                _push(conn, session, path, timeout=60.0 if args.event == "stop" else 8.0)
     except Exception:  # noqa: BLE001 - a hook must never fail the turn
         _log("hook stop")
     return 0
@@ -366,18 +461,30 @@ def cmd_index(args) -> int:
     if args.jev and not jev.api_key():
         print("--jev needs an OpenRouter key: FOCUSED_OPENROUTER_API_KEY or OPENROUTER_API_KEY.", file=sys.stderr)
         return 2
+    try:
+        hosted = remote.settings() is not None
+    except remote.RemoteError as error:
+        print(f"focused: {error}", file=sys.stderr)
+        return 2
     failed = 0
     for path in paths:  # one bad transcript must not stop the rest
         asked = ""
         try:
             with closing(store.connect(_db(args, path))) as conn:
                 parsed = store.index_transcript(conn, path)
+                session = parsed.session_id or Path(path).stem
                 if args.jev:
-                    done = store.ask_jev(conn, parsed.session_id or Path(path).stem, budget=float("inf"))
+                    done = store.ask_jev(conn, session, budget=float("inf"))
                     asked = f", {done['requests']} Jev requests"
                     for error in done["errors"]:
                         print(f"{path}: Jev failed on {error}", file=sys.stderr)
                     failed += bool(done["errors"])
+                if hosted:
+                    problem = _push(conn, session, path, timeout=300.0)
+                    if problem:
+                        print(f"{path}: not pushed ({problem})", file=sys.stderr)
+                        failed += 1
+                    asked += ", pushed" if not problem else ""
         except (OSError, ValueError, sqlite3.Error, jev.JevError) as error:
             print(f"{path}: skipped ({error})", file=sys.stderr)
             failed += 1
@@ -389,7 +496,12 @@ def cmd_index(args) -> int:
 
 
 def cmd_answers(args) -> int:
-    with closing(store.connect(_db(args))) as conn:
+    db = _db(args)
+    if args.session:
+        args.session = _named(args, db, args.session)
+        if args.session is None:  # several matched, and are listed
+            return 0
+    with closing(store.connect(_with_session(args, db, args.session))) as conn:
         return _answers(args, conn)
 
 
@@ -405,7 +517,7 @@ def _answers(args, conn) -> int:
     if keep is not None:
         rows = [r for r in rows if r["turn_key"] in keep or r["parent_key"] in keep]
     first = len(listed) - len(keep) + 1 if keep is not None else 1
-    print(f"# session {session}\n")
+    print(f"# {store.session_name(conn, session)}\n")
     print(format_turns(rows, full=args.full, events=args.events, number_from=max(first, 1),
                        views=store.turn_views(conn, session)))
     return 0
@@ -413,6 +525,11 @@ def _answers(args, conn) -> int:
 
 def cmd_context(args) -> int:
     db = _db(args)
+    if args.session:
+        args.session = _named(args, db, args.session)
+        if args.session is None:  # several matched, and are listed as a choice
+            return 0
+    db = _with_session(args, db, args.session)
     with closing(store.connect(db)) as conn:
         session = args.session or args.in_session or store.latest_session(conn)
         if not session:
@@ -421,13 +538,15 @@ def cmd_context(args) -> int:
             full_path = _summary_file(session)
             short, full = summary.build(conn, session, str(full_path))
             if not short and args.in_session and not args.session:
-                # Right after /clear the session holds only this command: show the one
-                # cleared, as the SessionStart hook did.
-                previous = _previous_session(conn, db, args.in_session)
-                if previous:
-                    session = previous
-                    full_path = _summary_file(session)
-                    short, full = summary.build(conn, session, str(full_path))
+                # Nothing said in this session yet. Right after /clear, show the session it
+                # ended, as the SessionStart hook did. Otherwise a new session needn't continue
+                # the latest one, so the person chooses (skills/context).
+                previous = _previous_session(conn, db, args.in_session, guess=False)
+                if not previous:
+                    return _choose(conn, db, args.in_session)
+                session = previous
+                full_path = _summary_file(session)
+                short, full = summary.build(conn, session, str(full_path))
         except ValueError as error:
             return _fail(args, f"focused: {error}.", 2)
     if not short:
@@ -441,6 +560,67 @@ def cmd_context(args) -> int:
         return 0
     print(full if args.full else short)
     return 0
+
+
+CHOICES = 3
+CHOOSE = "focused: choose a session."
+
+
+def _choose(conn, db: Path, current: Optional[str]) -> int:
+    """The project's latest other sessions with a message in them, here and in the hosted
+    index, printed as a choice for the context skill to offer."""
+    rows, problem = _sessions(conn, db)
+    if problem:
+        print(problem + "\n")
+    choices = [row for row in rows if row["session_id"] != current and (row.get("messages") or 0) > 0]
+    if not choices:
+        print("focused: no other session of this project is indexed, so there is no summary to show.")
+        return 0
+    _print_choice(choices, f"{CHOOSE} Nothing has been said in this one yet, and a new session doesn't "
+                           "always continue the latest, so focused doesn't guess. The project's latest sessions:")
+    return 0
+
+
+def _print_choice(rows: list, heading: str) -> None:
+    """Up to CHOICES sessions, newest first, one a line as
+    `n. id | title | when | messages | first message`: what skills/context offers."""
+    def plain(text, limit: int) -> str:
+        return preview(" ".join(str(text or "").split()).replace("|", "/"), limit)
+
+    print(heading)
+    for n, row in enumerate(rows[:CHOICES], 1):
+        messages = row.get("messages") or 0
+        print(f"{n}. {row['session_id']} | {plain(row.get('title'), 60) if row.get('title') else '(no title)'} | "
+              f"{(row.get('last_at') or '')[:16].replace('T', ' ')} | {messages} message{'' if messages == 1 else 's'} | "
+              f"{plain(row.get('first_prompt'), 100)}")
+
+
+def _sessions(conn, db: Path, title: Optional[str] = None, any_project: bool = False) -> tuple:
+    """This project's sessions, newest first, from this index and the hosted one, each with
+    its title, its number of messages and its first message; and what went wrong reading
+    the hosted one. With `title`, the hosted index sends those whose title has its words;
+    with `any_project`, also its latest sessions of every project, for an id's start."""
+    conn.create_function("is_own_command", 1, is_own_command, deterministic=True)
+    listed = ", ".join("?" * len(LISTED))
+    question = f"origin IN ({listed}) AND NOT is_own_command(prompt)"
+    found = {row["session_id"]: dict(row) for row in conn.execute(
+        "SELECT s.session_id, s.last_at, s.title, "
+        f"(SELECT COUNT(*) FROM turns WHERE session_id = s.session_id AND {question}) AS messages, "
+        f"(SELECT prompt FROM turns WHERE session_id = s.session_id AND {question} ORDER BY seq LIMIT 1) AS first_prompt "
+        "FROM sessions s ORDER BY s.last_at DESC", (*LISTED, *LISTED))}
+    problem = None
+    try:
+        if remote.settings() is not None:
+            hosted = remote.sessions(db.stem, limit=50 if title else 20, title=title, timeout=8.0)
+            if any_project:
+                hosted += remote.sessions(None, limit=200, timeout=8.0)  # ids are unique
+            for row in hosted:
+                found.setdefault(str(row.get("session_id")), row)
+    except remote.RemoteError as error:
+        problem = f"focused: could not list the hosted index's sessions ({error}), so these are only this machine's."
+    rows = [row for key, row in found.items() if PLAIN_ID.fullmatch(key)]
+    rows.sort(key=lambda row: row.get("last_at") or "", reverse=True)
+    return rows, problem
 
 
 def cmd_install(args) -> int:
@@ -462,21 +642,57 @@ def cmd_install(args) -> int:
 def cmd_find(args) -> int:
     if not args.words:
         return _fail(args, "Name the words to search for, as in: find webhook retry", 2)
-    with closing(store.connect(_db(args))) as conn:
+    db = _db(args)
+    with closing(store.connect(db)) as conn:
         rows = store.search(conn, args.words, limit=args.limit)
         paras = store.search_paras(conn, args.words, limit=args.limit)
-    if not rows and not paras:
+        here = {row[0] for row in conn.execute("SELECT session_id FROM sessions")}
+    hosted, problem = _hosted_find(args, db.stem, here)
+    if not rows and not paras and not hosted:
+        if problem:
+            print(problem)
         print("No match.")
         return 0 if args.in_session else 1
     for row in rows:
         when = (row["started_at"] or "")[:16].replace("T", " ")
-        print(f"- {when} · session {row['session_id'][:8]} · {row['origin']}: {row['hit']}")
+        print(f"- {when} · {store.name(row['session_id'], row['title'])} · {row['origin']}: {row['hit']}")
     if paras:
         print("\nIn Claude's replies, wake-ups included:" if rows else "In Claude's replies, wake-ups included:")
         for row in paras:
             when = (row["started_at"] or "")[:16].replace("T", " ")
-            print(f"- {when} · session {row['session_id'][:8]} · after: {preview(row['prompt'], 60, first_line=True)}\n  {row['hit']}")
+            print(f"- {when} · {store.name(row['session_id'], row['title'])} · after: "
+                  f"{preview(row['prompt'], 60, first_line=True)}\n  {row['hit']}")
+    if hosted:
+        print(("\n" if rows or paras else "") + "In the hosted index, from sessions not on this machine:")
+        print("\n".join(hosted))
+    if problem:
+        print(("\n" if rows or paras or hosted else "") + problem)
     return 0
+
+
+def _hosted_find(args, project: str, here: set) -> tuple:
+    """Lines for the hosted index's matches from sessions this index doesn't hold, each
+    named by its title and the start of its id, as `--session` takes either; and what
+    went wrong, if anything."""
+    try:
+        if remote.settings() is None:
+            return [], None
+        found = remote.search(args.words, project, limit=args.limit)
+    except remote.RemoteError as error:
+        return [], f"focused: could not search the hosted index ({error})."
+    lines = []
+    for row in found["turns"]:
+        if row.get("session_id") in here or is_own_command(row.get("prompt")):
+            continue
+        when = (row.get("started_at") or "")[:16].replace("T", " ")
+        lines.append(f"- {when} · {store.name(str(row.get('session_id')), row.get('title'))} · {row.get('origin')}: {row.get('hit')}")
+    for row in found["paras"]:
+        if row.get("session_id") in here:
+            continue
+        when = (row.get("started_at") or "")[:16].replace("T", " ")
+        lines.append(f"- {when} · {store.name(str(row.get('session_id')), row.get('title'))} · after: "
+                     f"{preview(row.get('prompt'), 60, first_line=True)}\n  {row.get('hit')}")
+    return lines, None
 
 
 def main(argv=None) -> int:
@@ -505,13 +721,15 @@ def main(argv=None) -> int:
 
     answers = sub.add_parser("answers", help="each question with its answer")
     answers.add_argument("-n", type=int, default=0, help="only the last N questions")
-    answers.add_argument("--session", help="a session id (default: the latest in this project)")
+    answers.add_argument("--session", help="a session's title, words of its title, its id or the first 8 "
+                         "characters of its id (default: the latest in this project)")
     answers.add_argument("--events", action="store_true", help="list the folded wake-ups and their replies")
     answers.add_argument("--full", action="store_true", help="print complete prompts and answers")
     answers.set_defaults(run=cmd_answers)
 
     context = sub.add_parser("context", help="the summary loaded after /clear and compaction")
-    context.add_argument("--session", help="a session id (default: the latest in this project)")
+    context.add_argument("--session", help="a session's title, words of its title, its id or the first 8 characters "
+                         "of its id (default: this session; in a session with nothing said yet, a choice of the latest)")
     context.add_argument("--full", action="store_true", help="every message, not only what fits the hook's limit")
     context.set_defaults(run=cmd_context)
 
