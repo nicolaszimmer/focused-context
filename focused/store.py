@@ -211,6 +211,9 @@ def index_transcript(conn: sqlite3.Connection, path, stop_message: Optional[str]
     """Upsert every turn of a transcript. Running it twice changes nothing."""
     parsed = parse(path)
     session_id = parsed.session_id or Path(path).stem
+    # Before the transaction: finding the repositories runs git, which mustn't hold the
+    # index's write lock.
+    worked_in = repos.of_session(parsed.places, parsed.start)
     with conn:
         for turn in parsed.turns:
             conn.execute(UPSERT, {
@@ -263,7 +266,7 @@ def index_transcript(conn: sqlite3.Connection, path, stop_message: Optional[str]
         conn.executemany(
             "INSERT INTO session_repos (session_id, repo, entries) VALUES (?, ?, ?) "
             "ON CONFLICT (session_id, repo) DO UPDATE SET entries = MAX(session_repos.entries, excluded.entries)",
-            [(session_id, repo, entries) for repo, entries in repos.of_session(parsed.places, parsed.start)])
+            [(session_id, repo, entries) for repo, entries in worked_in])
         prune(conn, now=now)
     return parsed
 

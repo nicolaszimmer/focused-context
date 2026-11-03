@@ -129,7 +129,7 @@ def block(items: list, mine: Optional[list] = None) -> str:
     """The short block added with a first message, at most BLOCK_CHARS."""
     out = HEAD + QUOTED
     for item in items:
-        name = store.name(item["session_id"], item.get("title"))
+        name = _flat(store.name(item["session_id"], item.get("title")), 120)
         line = f"\n- {name}, {(item.get('started_at') or '')[:10]}{_where(item, mine)}: {_quoted(item['part'], 160)}"
         answers = item.get("answers") or []
         if answers:
@@ -144,16 +144,18 @@ def listing(items: list, vectors: bool, mine: Optional[list] = None) -> str:
     """What `focused recall` prints: each part in full, with its answers."""
     if not items:
         return "No earlier message bears on that." + ("" if vectors else " (The hosted index searched by words alone.)")
-    out = [HEAD.replace(" /focused-recall finds more.", "")]
+    out = [HEAD.replace(" /focused-recall finds more.", "") + QUOTED]
     for item in items:
         how = ", ".join(item.get("via") or [])
         similarity = item.get("similarity")
-        out.append(f"\n## {store.name(item['session_id'], item.get('title'))}, {(item.get('started_at') or '')[:16].replace('T', ' ')}"
+        name = _flat(store.name(item["session_id"], item.get("title")), 120)
+        out.append(f"\n## {name}, {(item.get('started_at') or '')[:16].replace('T', ' ')}"
                    f" (by {how}{f', {similarity:.2f}' if isinstance(similarity, (int, float)) else ''}"
                    f"{_where(item, mine).replace(', ', '; ', 1)})")
-        out.append(f"You: {item['part'].strip()}")
+        # Whole, as JSON strings: their line breaks escaped, so none starts a line here.
+        out.append(f"You: {json.dumps(item['part'].strip(), ensure_ascii=False)}")
         for answer in item.get("answers") or []:
-            out.append(f"  → {answer.strip()}")
+            out.append(f"  → {json.dumps(answer.strip(), ensure_ascii=False)}")
     if not vectors:
         out.append("\n(The hosted index searched by words alone: it has no embeddings.)")
     return "\n".join(out)

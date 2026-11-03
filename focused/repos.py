@@ -35,7 +35,8 @@ LISTED = 50  # repositories sent with a recall
 
 def name_for_url(url: str) -> Optional[str]:
     """`github.com/owner/name` for a remote's URL in any of git's forms (https, ssh, scp-like),
-    without credentials, port or `.git`; None for a local path or anything else."""
+    without credentials, port or `.git`, in lower case (GitHub's names ignore case); None for
+    a local path or anything else."""
     url = (url or "").strip()
     if "://" in url:
         try:
@@ -55,7 +56,7 @@ def name_for_url(url: str) -> Optional[str]:
     path = path.strip("/")
     if path.endswith(".git"):
         path = path[:-4]
-    name = f"{host.lower()}/{path}"
+    name = f"{host}/{path}".lower()
     return name if host and NAME.fullmatch(name) and len(name) <= LONGEST else None
 
 

@@ -39,6 +39,7 @@ class NameTest(unittest.TestCase):
                     "git@github.com:o/focused-context.git", "github.com:o/focused-context"):
             self.assertEqual(repos.name_for_url(url), FC, url)
         self.assertEqual(repos.name_for_url("https://gitlab.com/group/sub/name.git"), "gitlab.com/group/sub/name")
+        self.assertEqual(repos.name_for_url("git@github.com:O/Focused-Context.git"), FC)  # one name, whatever the case
         for url in ("", "/srv/git/name.git", "./name", "file:///srv/git/name.git", "https://github.com/",
                     "C:/repos/tool", "c:\\repos\\tool", "https://[::1/o/name",
                     "https://github.com/o/na me", "https://github.com/" + "x/" * 120):
@@ -93,6 +94,20 @@ class ExtractTest(RemoteFixture):
             store.index_transcript(conn, self.transcript)
             self.assertEqual(len(store.session_repos(conn, "s1")), 3)
             self.assertEqual(store.session_repos(conn, "s1")[0], {"repo": FC, "entries": 5})
+
+    def test_git_runs_before_the_index_takes_its_write_lock(self):
+        self.write(self.session())
+        seen = []
+        conn = store.connect(store.db_for_transcript(self.transcript))
+        self.addCleanup(conn.close)
+        real = repos.of_session
+
+        def looking(places, start):
+            seen.append(conn.in_transaction)
+            return real(places, start)
+        with mock.patch.object(store.repos, "of_session", looking):
+            store.index_transcript(conn, self.transcript)
+        self.assertEqual(seen, [False])
 
     def test_a_push_names_them_and_a_session_read_back_brings_them(self):
         self.write(self.session())
