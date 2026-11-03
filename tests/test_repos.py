@@ -40,6 +40,7 @@ class NameTest(unittest.TestCase):
             self.assertEqual(repos.name_for_url(url), FC, url)
         self.assertEqual(repos.name_for_url("https://gitlab.com/group/sub/name.git"), "gitlab.com/group/sub/name")
         for url in ("", "/srv/git/name.git", "./name", "file:///srv/git/name.git", "https://github.com/",
+                    "C:/repos/tool", "c:\\repos\\tool", "https://[::1/o/name",
                     "https://github.com/o/na me", "https://github.com/" + "x/" * 120):
             self.assertIsNone(repos.name_for_url(url), url)
         self.assertEqual(repos.short(FC), "focused-context")
@@ -143,10 +144,10 @@ class RecallByRepositoryTest(RemoteFixture):
         sent = self.worker.recalls[-1]
         self.assertEqual((sent["repos"], sent["min_similarity"]), ([FC], recall.MIN_SIMILARITY))
         context = json.loads(out.getvalue())["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("- “The Worker” (near1), 2026-11-02, related repository (focused-context-worker): Is it deployed?",
+        self.assertIn('- “The Worker” (near1), 2026-11-02, related repository (focused-context-worker): "Is it deployed?"',
                       context)
-        self.assertIn("- “Recall” (same1), 2026-11-01, same repository (focused-context): Where is recall?", context)
-        self.assertIn("- “Else” (none1), 2026-11-01: Unrelated?", context)  # a relation it doesn't know is none
+        self.assertIn('- “Recall” (same1), 2026-11-01, same repository (focused-context): "Where is recall?"', context)
+        self.assertIn('- “Else” (none1), 2026-11-01: "Unrelated?"', context)  # a relation it doesn't know is none
 
     def test_on_demand_it_sends_the_repositories_worked_in_and_a_lower_floor(self):
         session = self.transcript.parent / "s2.jsonl"

@@ -38,13 +38,18 @@ def name_for_url(url: str) -> Optional[str]:
     without credentials, port or `.git`; None for a local path or anything else."""
     url = (url or "").strip()
     if "://" in url:
-        parts = urllib.parse.urlsplit(url)
+        try:
+            parts = urllib.parse.urlsplit(url)
+            host = parts.hostname or ""
+        except ValueError:  # an unclosed IPv6 bracket, say
+            return None
         if parts.scheme == "file":
             return None
-        host, path = parts.hostname or "", parts.path
+        path = parts.path
     else:
         match = SCP.match(url)
-        if not match or url.startswith(("/", ".")):
+        # A Windows path (C:/repos/name) is a local path, not a host and a path.
+        if not match or url.startswith(("/", ".")) or len(match.group(1)) == 1:
             return None
         host, path = match.group(1).lower(), match.group(2)
     path = path.strip("/")

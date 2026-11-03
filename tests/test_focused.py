@@ -343,6 +343,7 @@ class HeadlessAndCommandTest(unittest.TestCase):
         from focused.transcript import is_own_command
         self.assertTrue(is_own_command("/focused-find sky"))
         self.assertTrue(is_own_command("/focused-answers"))
+        self.assertTrue(is_own_command("/focused-recall the webhook"))  # it answers with copies of other sessions
         self.assertTrue(is_own_command("/focused-context --full"))
         self.assertTrue(is_own_command("/focused-find\tsky"))
         self.assertTrue(is_own_command("/focused-answers\n\n(sent while Claude was working) also this"))

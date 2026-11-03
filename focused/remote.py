@@ -287,8 +287,9 @@ def recall(text: str, exclude: Optional[str] = None, project: Optional[str] = No
     found = _object(_call("POST", "/v1/recall", _encoded(body), timeout=timeout), "recall results")
     items = _rows(found.get("items"), "recalled parts")
     for item in items:
+        answers = item.get("answers", [])
         if not (isinstance(item.get("session_id"), str) and isinstance(item.get("part"), str)
-                and isinstance(item.get("answers", []), list)):
+                and isinstance(answers, list) and all(isinstance(a, str) for a in answers)):
             raise RemoteError("the Worker sent a recalled part without its session or text")
         item["repos"] = [r for r in item.get("repos") or [] if isinstance(r, str)]
         item["relation"] = item.get("relation") if item.get("relation") in ("same", "near") else None

@@ -52,7 +52,7 @@ LISTED = (HUMAN, UNKNOWN, SDK)  # turns a person may have started
 # /focused-review stays). Their answers are copies of other answers, so lists and searches
 # leave them out.
 PLUGIN_NAMESPACE = "/focused:"
-REPOSITORY_COMMANDS = ("/focused-answers", "/focused-find", "/focused-context")
+REPOSITORY_COMMANDS = ("/focused-answers", "/focused-find", "/focused-context", "/focused-recall")
 
 
 def is_own_command(prompt) -> bool:

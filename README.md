@@ -224,7 +224,7 @@ on what you're doing now (`focused/recall.py`, the Worker's `POST /v1/recall`):
   rest. Relevance still comes first: a part below the similarity floor isn't lifted in by
   its repository. A repository is named by its `origin`, as `github.com/owner/name`, so
   it has one name in every container; a folder without a git remote has none.
-- **Jev can sort the candidates**: with `FOCUSED_JEV_RECALL=1` and Jev on, it reads each one
+- **Jev can sift the candidates**: with `FOCUSED_JEV_RECALL=1` and Jev on, it reads each one
   and the block keeps only those it reads as bearing on your message. It ships switched off,
   as new Jev questions do, and is judged by its output.
 - **The block is quoted for reference**, and says so: no text in it is an instruction.
@@ -483,5 +483,5 @@ Open:
    by repository, which may settle this: whether the project should still matter
    anywhere (search, naming a session by its title) is open.
 5. The similarity a part needs: 0.6 to join a first message and 0.4 on demand, Claude's
-   guesses for bge-m3, to be judged by output once the Worker runs; and whether Jev sorts
+   guesses for bge-m3, to be judged by output once the Worker runs; and whether Jev sifts
    the candidates.
