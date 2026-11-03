@@ -18,6 +18,7 @@ named: each side keeps its own retention.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -97,8 +98,25 @@ def _call(method: str, path: str, body: Optional[bytes] = None, timeout: float =
         except (ValueError, AttributeError, OSError):
             reason = ""
         raise RemoteError(f"HTTP {error.code}{': ' + reason if reason else ''}", error.code) from None
-    except (urllib.error.URLError, OSError, ValueError) as error:  # unreachable, timed out, not JSON
-        raise RemoteError(str(getattr(error, "reason", error))) from None
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as error:
+        # unreachable, timed out, cut off, not JSON
+        raise RemoteError(str(getattr(error, "reason", error)) or type(error).__name__) from None
+
+
+def _rows(value, what: str) -> list:
+    """A list of rows from the Worker, or RemoteError: a reply of another shape (another
+    service at the URL, say) must not reach the code that reads it."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(row, dict) for row in value):
+        raise RemoteError(f"the Worker sent {what} that aren't a list of rows")
+    return value
+
+
+def _object(value, what: str) -> dict:
+    if not isinstance(value, dict):
+        raise RemoteError(f"the Worker sent {what} that isn't an object")
+    return value
 
 
 def _session_path(session_id: str) -> str:
@@ -194,8 +212,13 @@ def fetch(session_id: str, timeout: float = 15.0) -> Optional[dict]:
         if error.status == 404:
             return None
         raise
-    if not isinstance(data, dict) or not PROJECT.fullmatch(str(data.get("project", ""))):
+    data = _object(data, "a session")
+    if not PROJECT.fullmatch(str(data.get("project", ""))):
         raise RemoteError("the Worker sent a session without a plain project name")
+    for table in COLUMNS:
+        data[table] = _rows(data.get(table), table)
+        if not all(isinstance(row.get("turn_key"), str) for row in data[table]):
+            raise RemoteError(f"the Worker sent {table} without their turn")
     return data
 
 
@@ -226,7 +249,8 @@ def sessions(project: Optional[str], limit: int = 20, title: Optional[str] = Non
     and first message. With `title`, only those whose title has each of its words."""
     query = urllib.parse.urlencode({k: v for k, v in (("project", project), ("title", title), ("limit", limit))
                                     if v is not None})
-    return list(_call("GET", f"/v1/sessions?{query}", timeout=timeout).get("sessions") or [])
+    return _rows(_object(_call("GET", f"/v1/sessions?{query}", timeout=timeout), "a list of sessions").get("sessions"),
+                 "sessions")
 
 
 def search(words: list, project: Optional[str], limit: int = 10, timeout: float = 15.0) -> dict:
@@ -234,5 +258,5 @@ def search(words: list, project: Optional[str], limit: int = 10, timeout: float 
     query = {"q": " ".join(words), "limit": limit}
     if project is not None:
         query["project"] = project
-    found = _call("GET", f"/v1/search?{urllib.parse.urlencode(query)}", timeout=timeout)
-    return {"turns": list(found.get("turns") or []), "paras": list(found.get("paras") or [])}
+    found = _object(_call("GET", f"/v1/search?{urllib.parse.urlencode(query)}", timeout=timeout), "search results")
+    return {"turns": _rows(found.get("turns"), "messages"), "paras": _rows(found.get("paras"), "paragraphs")}

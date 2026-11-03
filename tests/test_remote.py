@@ -35,6 +35,7 @@ class FakeWorker:
         self.requests: list = []
         self.fail: list = []  # statuses to answer the next requests with
         self.redirect = None  # a URL to send every request on to
+        self.raw: list = []  # (body, declared length) to answer the next requests with, as they are
         worker = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -69,6 +70,15 @@ class FakeWorker:
                     return self.reply(401, {"error": "unauthorized"})
                 if worker.fail:
                     return self.reply(worker.fail.pop(0), {"error": "failing on purpose"})
+                if worker.raw:
+                    body, declared = worker.raw.pop(0)
+                    self.send_response(200)
+                    self.send_header("content-type", "application/json")
+                    self.send_header("content-length", str(declared))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    self.close_connection = True
+                    return
                 url = urllib.parse.urlsplit(self.path)
                 query = dict(urllib.parse.parse_qsl(url.query))
                 if url.path.startswith("/v1/sessions/"):
@@ -267,6 +277,26 @@ class PushTest(RemoteFixture):
         self.assertEqual(self.worker.sessions, {})
 
 
+class MalformedReplyTest(RemoteFixture):
+    def test_a_reply_of_another_shape_or_cut_short_is_a_remote_error(self):
+        conn = self.index()
+        remote.push(conn, "s1", "-work-repo")
+        cases = [
+            (lambda: remote.sessions("-work-repo"), b'["not", "an", "object"]'),
+            (lambda: remote.sessions("-work-repo"), b'{"sessions": [1, 2]}'),
+            (lambda: remote.search(["hooks"], None), b'{"turns": "oops"}'),
+            (lambda: remote.fetch("s1"), b'{"project": "-work-repo", "turns": [{"seq": 1}]}'),
+            (lambda: remote.fetch("s1"), b'{"project": "../x"}'),
+        ]
+        for call, body in cases:
+            self.worker.raw.append((body, len(body)))
+            with self.assertRaises(remote.RemoteError, msg=body):
+                call()
+        self.worker.raw.append((b'{"sessions": [', 500))  # the connection closes before the body ends
+        with self.assertRaises(remote.RemoteError):
+            remote.sessions("-work-repo")
+
+
 class ReadBackTest(RemoteFixture):
     def test_a_session_reads_back_row_for_row_and_is_not_sent_back(self):
         here = self.index()
@@ -394,6 +424,16 @@ class HostedCliTest(RemoteFixture):
             code, out = self.run_cli("--in-session", "s2", "find", "hooks")
         self.assertIn("could not search the hosted index (HTTP 500: failing on purpose)", out)
         self.assertIn("session s2", out)
+
+    def test_a_session_id_that_isnt_plain_is_never_offered(self):
+        self.push_from_elsewhere()
+        hostile = "x';touch pwned;'"
+        self.worker.sessions[hostile] = dict(self.worker.sessions["s1"], last_at="2026-11-03T23:00:00.000Z")
+        self.new_session("<command-name>/focused:context</command-name>")
+        with mock.patch.object(cli, "projects_dir", return_value=self.transcript.parent.parent):
+            code, out = self.run_cli("--in-session", "s2", "context")
+        self.assertIn("1. s1 | Hooks and answers |", out)
+        self.assertNotIn("pwned", out)
 
     def test_a_session_only_the_hosted_index_holds_is_named_by_its_title(self):
         self.push_from_elsewhere()

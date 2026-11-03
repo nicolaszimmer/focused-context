@@ -30,8 +30,9 @@ session's title, shortened to five words if longer, and its description is
 option, labelled "None of these", that shows nothing. The tool adds a field where the user
 can type another session's title. Then run the command again with `--session` and the
 chosen session, single-quoted, and `'--full'` if the user gave it: for a numbered option,
-the id on its line; for typed text, the text itself, with any single quote inside it
-escaped as `'\''`. For "None of these", run nothing. Show the output as above, and handle
+the id on its line, and only if it is made only of letters, digits, `-` and `_` (if it
+isn't, say so and run nothing); for typed text, the text itself, with any single quote
+inside it escaped as `'\''`. For "None of these", run nothing. Show the output as above, and handle
 a new choice in it the same way. If the output has lines before the
 `focused: choose a session.` line, show them to the user too.
 
