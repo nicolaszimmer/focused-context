@@ -2,9 +2,13 @@
 
     focused hook stop|session-end     # as a hook: reads the hook's JSON on stdin
     focused index <transcript.jsonl>  # index one transcript
-    focused index --all               # index every transcript under ~/.claude/projects
+    focused index --all [--jev]       # index every transcript under ~/.claude/projects
     focused answers [-n N] [--session ID] [--events] [--full]
     focused find <words>
+
+With FOCUSED_JEV=1 and an OpenRouter key, the Stop hook also asks Jev what each part
+of a message does and which paragraphs answer it (focused/jev.py); `answers` then lists
+the parts with their answers. Without it, each turn shows its final text, as before.
 
 From a skill, pass --in-session <id>: focused reindexes that session's transcript, uses
 its project's index, and reports every problem on stdout with exit code 0, so the skill
@@ -20,13 +24,14 @@ import json
 import os
 import sqlite3
 import sys
+import time
 import traceback
 from collections import Counter
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import store
+from . import jev, store
 from .transcript import LISTED, is_own_command
 
 
@@ -64,8 +69,27 @@ def is_question(row) -> bool:
     return row["origin"] in LISTED and not is_own_command(row["prompt"])
 
 
-def format_turns(rows, full: bool = False, events: bool = False, number_from: int = 1) -> str:
-    """Each listed turn with its answer; synthetic turns folded under it."""
+def _jev_lines(view: dict, full: bool) -> list:
+    out = []
+    for part in view["parts"]:
+        who = "You, while Claude worked" if part["queued"] else "You"
+        text = part["text"].strip() if full else preview(part["text"], 300)
+        out.append(f"{who} [{', '.join(part['tags'])}]: {text}")
+        answers = view["answers"].get(part["n"], [])
+        for answer in answers:
+            where = "" if answer["place"] == "reply to the message" else \
+                f" (after a wake-up, {(answer['started_at'] or '')[11:16]})"
+            body = answer["text"].strip() if full else preview(answer["text"], 400)
+            out.append(f"  → {body}{where}".replace("\n", "\n    "))
+        if not answers and any(tag in jev.NEEDS_ANSWER for tag in part["tags"]):
+            out.append("  → (no answer found)")
+    return out
+
+
+def format_turns(rows, full: bool = False, events: bool = False, number_from: int = 1, views=None) -> str:
+    """Each listed turn with its answer; synthetic turns folded under it. A turn Jev has
+    read shows each part of the message with the paragraphs that answer it."""
+    views = views or {}
     listed = [r for r in rows if is_question(r)]
     children: dict = {}
     for row in rows:
@@ -75,12 +99,16 @@ def format_turns(rows, full: bool = False, events: bool = False, number_from: in
     for i, row in enumerate(listed, number_from):
         mark = {"human": "", "sdk": " · via SDK"}.get(row["origin"], " · origin unknown")
         out.append(f"## {i}. {(row['started_at'] or '')[:16].replace('T', ' ')}{mark}")
-        out.append("Q: " + (row["prompt"].strip() or "(no text)" if full else preview(row["prompt"], 200, first_line=True)))
-        answer = row["answer"]
-        if answer is None:
-            out.append("A: (no answer yet)")
+        view = views.get(row["turn_key"])
+        if view and view["complete"]:
+            out.extend(_jev_lines(view, full))
         else:
-            out.append("A: " + (answer.strip() if full else preview(answer, 600)))
+            out.append("You: " + (row["prompt"].strip() or "(no text)" if full else preview(row["prompt"], 200, first_line=True)))
+            answer = row["answer"]
+            if answer is None:
+                out.append("A: (no answer yet)")
+            else:
+                out.append("A: " + (answer.strip() if full else preview(answer, 600)))
         facts = []
         for label, key in (("files", "files"), ("commits", "commits"), ("PRs", "pull_requests")):
             values = _list(row[key])
@@ -142,23 +170,67 @@ def _fail(args, message: str, code: int) -> int:
     return code
 
 
+def _log(what: str) -> None:
+    try:
+        log = store.home() / "errors.log"
+        log.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with open(os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a", encoding="utf-8") as handle:
+            handle.write(f"{datetime.now(timezone.utc).isoformat()} {what}\n{traceback.format_exc()}\n")
+    except OSError:
+        pass
+
+
+class _SessionLock:
+    """One Jev run per session at a time: a second async Stop hook skips, and the next
+    run picks up whatever it would have asked. Where there is no fcntl, no lock."""
+
+    def __init__(self, session: str):
+        self.path = store.home() / f"jev-{session}.lock"
+        self.handle = None
+
+    def __enter__(self) -> bool:
+        try:
+            import fcntl
+        except ImportError:
+            return True
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.handle = open(os.open(self.path, os.O_WRONLY | os.O_CREAT, 0o600), "w")
+        try:
+            fcntl.flock(self.handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            return False
+
+    def __exit__(self, *exc) -> None:
+        if self.handle:
+            self.handle.close()
+
+
 def cmd_hook_stop(args) -> int:
-    """Fails open: never blocks Claude, never prints to stdout."""
+    """Fails open: never blocks Claude, never prints to stdout. With Jev on, the Stop
+    hook (async) also asks Jev about what it hasn't read yet; SessionEnd doesn't, as its
+    time is short."""
     try:
         payload = json.load(sys.stdin)
         path = payload.get("transcript_path")
         if path and os.path.exists(path):
-            conn = store.connect(_db(args, path))
-            store.index_transcript(conn, path, stop_message=payload.get("last_assistant_message"))
-            conn.close()
+            stop_message = payload.get("last_assistant_message")
+            with closing(store.connect(_db(args, path))) as conn:
+                parsed = store.index_transcript(conn, path, stop_message=stop_message)
+                if args.event == "stop" and jev.enabled():
+                    wanted = (stop_message or "").strip()
+                    if wanted and not any(wanted == reply.strip() for t in parsed.turns for reply in t.replies):
+                        time.sleep(2)  # the transcript may not hold the final message yet
+                        parsed = store.index_transcript(conn, path, stop_message=stop_message)
+                    session = parsed.session_id or Path(path).stem
+                    with _SessionLock(session) as mine:
+                        if mine:
+                            try:
+                                store.ask_jev(conn, session)
+                            except Exception:  # noqa: BLE001 - what Jev didn't read is shown as before
+                                _log("jev")
     except Exception:  # noqa: BLE001 - a hook must never fail the turn
-        try:
-            log = store.home() / "errors.log"
-            log.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            with open(os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a", encoding="utf-8") as handle:
-                handle.write(f"{datetime.now(timezone.utc).isoformat()} hook stop\n{traceback.format_exc()}\n")
-        except OSError:
-            pass
+        _log("hook stop")
     return 0
 
 
@@ -169,17 +241,25 @@ def cmd_index(args) -> int:
     if not paths:
         print("Nothing to index: name a transcript, or pass --all.", file=sys.stderr)
         return 2
+    if args.jev and not jev.api_key():
+        print("--jev needs an OpenRouter key: FOCUSED_OPENROUTER_API_KEY or OPENROUTER_API_KEY.", file=sys.stderr)
+        return 2
     failed = 0
     for path in paths:  # one bad transcript must not stop the rest
+        asked = ""
         try:
             with closing(store.connect(_db(args, path))) as conn:
                 parsed = store.index_transcript(conn, path)
-        except (OSError, ValueError, sqlite3.Error) as error:
+                if args.jev:
+                    done = store.ask_jev(conn, parsed.session_id or Path(path).stem, budget=float("inf"))
+                    asked = f", {done['requests']} Jev requests"
+        except (OSError, ValueError, sqlite3.Error, jev.JevError) as error:
             print(f"{path}: skipped ({error})", file=sys.stderr)
             failed += 1
             continue
         listed = sum(1 for t in parsed.turns if t.listed)
-        print(f"{path}: {listed} questions, {len(parsed.turns) - listed} other turns")
+        others = len(parsed.turns) - listed
+        print(f"{path}: {listed} message{'' if listed == 1 else 's'}, {others} other turn{'' if others == 1 else 's'}{asked}")
     return 1 if failed else 0
 
 
@@ -201,7 +281,8 @@ def _answers(args, conn) -> int:
         rows = [r for r in rows if r["turn_key"] in keep or r["parent_key"] in keep]
     first = len(listed) - len(keep) + 1 if keep is not None else 1
     print(f"# session {session}\n")
-    print(format_turns(rows, full=args.full, events=args.events, number_from=max(first, 1)))
+    print(format_turns(rows, full=args.full, events=args.events, number_from=max(first, 1),
+                       views=store.turn_views(conn, session)))
     return 0
 
 
@@ -210,12 +291,18 @@ def cmd_find(args) -> int:
         return _fail(args, "Name the words to search for, as in: find webhook retry", 2)
     with closing(store.connect(_db(args))) as conn:
         rows = store.search(conn, args.words, limit=args.limit)
-    if not rows:
+        paras = store.search_paras(conn, args.words, limit=args.limit)
+    if not rows and not paras:
         print("No match.")
         return 0 if args.in_session else 1
     for row in rows:
         when = (row["started_at"] or "")[:16].replace("T", " ")
         print(f"- {when} · session {row['session_id'][:8]} · {row['origin']}: {row['hit']}")
+    if paras:
+        print("\nIn Claude's replies, wake-ups included:" if rows else "In Claude's replies, wake-ups included:")
+        for row in paras:
+            when = (row["started_at"] or "")[:16].replace("T", " ")
+            print(f"- {when} · session {row['session_id'][:8]} · after: {preview(row['prompt'], 60, first_line=True)}\n  {row['hit']}")
     return 0
 
 
@@ -238,6 +325,7 @@ def main(argv=None) -> int:
     index = sub.add_parser("index", help="index transcripts")
     index.add_argument("paths", nargs="*")
     index.add_argument("--all", action="store_true", help="every transcript under ~/.claude/projects")
+    index.add_argument("--jev", action="store_true", help="also ask Jev about every turn it hasn't read")
     index.set_defaults(run=cmd_index)
 
     answers = sub.add_parser("answers", help="each question with its answer")

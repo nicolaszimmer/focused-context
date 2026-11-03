@@ -1,8 +1,8 @@
 {
   "name": "focused",
   "displayName": "Focused context",
-  "version": "0.2.2",
-  "description": "Indexes each turn of a session: your question, Claude's final answer, and the wake-ups filed under it. /focused:answers lists them, /focused:find searches them. The index stays on this machine, in ~/.claude/focused.",
+  "version": "0.3.0",
+  "description": "Finds your answers in a long session. Indexes each message, split into its parts, and everything Claude wrote in reply, wake-ups included. With Jev switched on, /focused:answers shows each part with the paragraphs that answer it; /focused:find searches it all. The index stays on this machine, in ~/.claude/focused.",
   "author": { "name": "nicolaszimmer" },
   "repository": "https://github.com/nicolaszimmer/focused-context",
   "keywords": ["context", "transcript", "index", "search"]

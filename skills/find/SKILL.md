@@ -1,5 +1,5 @@
 ---
-description: Search every question and answer indexed for this project.
+description: Search every message and reply indexed for this project, wake-ups included.
 argument-hint: "<words>"
 disable-model-invocation: true
 allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/focused.py" *)
