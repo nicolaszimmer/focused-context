@@ -2,9 +2,11 @@ import io
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import closing, redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
@@ -237,6 +239,144 @@ class CliTest(Fixture):
         code, out = self.run_cli("--db", db, "find", "hooks")
         self.assertEqual(code, 0)
         self.assertIn("[hooks]", out.lower())
+
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+class HeadlessAndCommandTest(unittest.TestCase):
+    """Shapes seen in a real `claude -p` session with the plugin loaded."""
+
+    ENTRIES = [
+        {"type": "user", "uuid": "p1", "sessionId": "s9", "turnOrigin": "sdk", "promptSource": "sdk",
+         "timestamp": "2026-11-03T07:33:00Z", "message": {"content": "Reply with exactly: the sky is blue"}},
+        assistant(text("the sky is blue")),
+        {"type": "user", "uuid": "p2", "sessionId": "s9", "turnOrigin": "sdk", "timestamp": "2026-11-03T07:34:00Z",
+         "message": {"content": "<command-message>focused:answers</command-message>\n"
+                                "<command-name>/focused:answers</command-name>\n<command-args>--events</command-args>"}},
+        {"type": "user", "uuid": "p3", "sessionId": "s9", "isMeta": True, "timestamp": "2026-11-03T07:34:00Z",
+         "message": {"content": "Base directory for this skill: ...\n# session s9"}},
+        assistant(text("```# session s9```")),
+    ]
+
+    def test_sdk_prompts_are_questions_and_a_command_keeps_its_reply(self):
+        from focused.transcript import parse_entries
+        turns = parse_entries(self.ENTRIES).turns
+        self.assertEqual([(t.origin, t.prompt) for t in turns],
+                         [("sdk", "Reply with exactly: the sky is blue"), ("sdk", "/focused:answers --events")])
+        self.assertEqual([t.answer for t in turns], ["the sky is blue", "```# session s9```"])
+        self.assertTrue(all(t.listed for t in turns))
+
+    def test_answers_leaves_out_the_plugins_own_commands(self):
+        from focused.cli import format_turns
+        from focused.transcript import parse_entries
+        rows = [{"turn_key": t.key, "origin": t.origin, "parent_key": t.parent_key, "started_at": t.started_at,
+                 "prompt": t.prompt, "answer": t.answer, "files": "[]", "commits": "[]", "pull_requests": "[]"}
+                for t in parse_entries(self.ENTRIES).turns]
+        out = format_turns(rows)
+        self.assertIn("Q: Reply with exactly: the sky is blue", out)
+        self.assertNotIn("/focused:answers", out)
+
+    def test_find_skips_the_plugins_own_command_turns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = Path(tmp) / "s9.jsonl"
+            entries = self.ENTRIES[:-1] + [assistant(text("Q: Reply ... A: the sky is blue"))]
+            transcript.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+            with closing(store.connect(Path(tmp) / "x.sqlite")) as conn:
+                store.index_transcript(conn, transcript, now=datetime(2026, 11, 3, tzinfo=timezone.utc))
+                self.assertEqual([h["turn_key"] for h in store.search(conn, ["sky"])], ["p1"])
+
+
+class PluginTest(unittest.TestCase):
+    def test_manifests_and_hooks_point_at_files_that_exist(self):
+        plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
+        market = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())
+        hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text())["hooks"]
+        self.assertEqual(market["plugins"][0]["name"], plugin["name"])
+        self.assertEqual(set(hooks), {"Stop", "SessionEnd"})
+        for event in hooks.values():
+            for hook in event[0]["hooks"]:
+                self.assertIn("${CLAUDE_PLUGIN_ROOT}/scripts/focused.py", hook["command"])
+        self.assertTrue((ROOT / "scripts" / "focused.py").exists())
+        for skill in ("answers", "find"):
+            body = (ROOT / "skills" / skill / "SKILL.md").read_text()
+            self.assertIn("disable-model-invocation: true", body)
+            self.assertIn('--in-session "${CLAUDE_SESSION_ID}"', body)
+            # What the user types never reaches a shell unquoted: no injected (!) command.
+            self.assertNotIn("!`", body)
+            self.assertNotIn("```!", body)
+
+    def test_launcher_runs_the_hook_without_installing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = Path(tmp) / "projects" / "-p" / "s1.jsonl"
+            transcript.parent.mkdir(parents=True)
+            transcript.write_text("\n".join(json.dumps(e) for e in SESSION) + "\n")
+            env = dict(os.environ, FOCUSED_HOME=str(Path(tmp) / "home"), FOCUSED_RETENTION_DAYS="36500")
+            done = subprocess.run([sys.executable, str(ROOT / "scripts" / "focused.py"), "hook", "session-end"],
+                                  input=json.dumps({"transcript_path": str(transcript)}), text=True,
+                                  capture_output=True, env=env, cwd=tmp)
+            self.assertEqual((done.returncode, done.stdout), (0, ""))
+            with closing(sqlite3.connect(Path(tmp) / "home" / "-p.sqlite")) as conn:
+                self.assertEqual(conn.execute("SELECT count(*) FROM turns").fetchone()[0], 6)
+
+
+class InSessionTest(Fixture):
+    """What the skills run: focused --in-session <id> answers|find."""
+
+    def setUp(self):
+        super().setUp()
+        os.environ["FOCUSED_RETENTION_DAYS"] = "36500"
+        os.environ["CLAUDE_CONFIG_DIR"] = str(self.dir)  # transcripts live under <dir>/projects
+
+    def run_cli(self, *args):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = cli.main(list(args))
+        return code, out.getvalue()
+
+    def test_indexes_the_session_first_and_lists_it(self):
+        code, out = self.run_cli("--in-session", "s1", "answers")
+        self.assertEqual(code, 0)
+        self.assertIn("A: Hooks only add context.", out)
+        self.assertTrue(store.db_for_transcript(self.transcript).exists())
+
+    def test_find_searches_that_sessions_project(self):
+        code, out = self.run_cli("--in-session", "s1", "find", "hooks")
+        self.assertEqual(code, 0)
+        self.assertIn("[hooks]", out.lower())
+
+    def test_words_with_quotes_and_shell_characters_are_search_terms(self):
+        code, out = self.run_cli("--in-session", "s1", "find", "hooks", "don't", "$(touch pwned)", "`id`")
+        self.assertEqual((code, out.strip()), (0, "No match."))
+        self.assertFalse(Path("pwned").exists())
+
+    def test_bad_skill_options_are_reported_not_fatal(self):
+        code, out = self.run_cli("--in-session", "s1", "answers", "--bogus")
+        self.assertEqual(code, 0)
+        self.assertIn("unrecognized arguments: --bogus", out)
+
+    def test_an_index_that_cannot_be_opened_is_reported_not_fatal(self):
+        with mock.patch.object(store, "connect", side_effect=sqlite3.OperationalError("unable to open database file")):
+            code, out = self.run_cli("--in-session", "s1", "answers")
+        self.assertEqual(code, 0)
+        self.assertIn("unable to open database file", out)
+
+    def test_a_failed_refresh_falls_back_to_the_existing_index(self):
+        self.run_cli("--in-session", "s1", "answers")
+        with mock.patch.object(store, "index_transcript", side_effect=sqlite3.OperationalError("database is locked")):
+            code, out = self.run_cli("--in-session", "s1", "answers")
+        self.assertEqual(code, 0)
+        self.assertIn("could not refresh the index (database is locked)", out)
+        self.assertIn("A: Hooks only add context.", out)
+
+    def test_problems_go_to_stdout_with_exit_0_so_a_skill_is_not_aborted(self):
+        self.transcript.unlink()
+        code, out = self.run_cli("--in-session", "nope", "answers")
+        self.assertEqual(code, 0)
+        self.assertIn("No indexed sessions", out)
+        code, out = self.run_cli("--in-session", "nope", "find")
+        self.assertEqual(code, 0)
+        self.assertIn("Name the words", out)
 
 
 if __name__ == "__main__":

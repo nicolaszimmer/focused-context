@@ -1,0 +1,12 @@
+{
+  "name": "focused-context",
+  "owner": { "name": "nicolaszimmer" },
+  "description": "The focused plugin: a local index of each question and its answer in Claude Code sessions.",
+  "plugins": [
+    {
+      "name": "focused",
+      "source": "./",
+      "description": "Index each question with Claude's final answer; list and search them with /focused:answers and /focused:find."
+    }
+  ]
+}

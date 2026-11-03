@@ -5,8 +5,8 @@ asked, what Claude answered, and the facts the next question needs. Reload
 only those after a break, and find an answer without scrolling past the
 chatter.
 
-Status: step 1, the turn index, is built (`focused/`). Its Stop hook is off
-until you switch it on (see "Using step 1"). Steps 2 and 3 are designs.
+Status: step 1, the turn index, is built (`focused/`) and packaged as a Claude
+Code plugin (see "Install"). Steps 2 and 3 are designs.
 
 ## The problem
 
@@ -152,49 +152,114 @@ comes last, if at all.
   distribution with the model and a digest of the question, so a threshold
   can be replayed offline (practices 5 and 7).
 
-## Using step 1
+## Install
 
-Python 3.10 or later, standard library only.
+As a Claude Code plugin (Claude Code 2.1.275 or later; Python 3.10 or later
+on the `PATH` as `python3`, standard library only):
+
+```
+/plugin install focused --marketplace nicolaszimmer/focused-context
+```
+
+On older versions: `/plugin marketplace add nicolaszimmer/focused-context`,
+then `/plugin install focused@focused-context`.
+
+**Installed for your user, the plugin indexes every project on that machine.**
+What it stores per turn is your prompt, Claude's final answer, the paths of
+files edited, commit hashes and pull request URLs: no tool output and no file
+contents. To leave a sensitive repository out, run this in it:
+
+```
+claude plugin disable focused@focused-context --scope local
+```
+
+That writes `"enabledPlugins": {"focused@focused-context": false}` to the
+repository's `.claude/settings.local.json`, which is not committed, and the
+hooks stop running there. Checked on 2026-11-03: of two projects under one
+user install, only the one without this setting was indexed. To switch the
+plugin off everywhere, run `/plugin disable focused@focused-context`.
+
+It brings:
+
+- **Two hooks.** `Stop` indexes after each turn, in the background, so the turn
+  never waits for it. `SessionEnd` indexes once more when you exit or run
+  `/clear`, in the foreground, because exiting cancels a background hook that
+  is still running. Its budget is 1.5 s; a 62 MB transcript takes 0.6 s.
+  Neither prints anything or fails a turn: errors go to
+  `~/.claude/focused/errors.log`.
+- **Two commands.** `/focused:answers [-n N] [--events] [--full]` lists this
+  session's questions with their answers; `/focused:find <words>` searches every
+  question and answer in this project. Each reindexes the session first, and
+  leaves out the plugin's own `/focused:` commands. Claude runs them through the
+  Bash tool, passing each of your words as its own single-quoted argument, with
+  a `'` inside a word written as `'\''`. The quoting is Claude's, under Claude
+  Code's normal permission checks, which check each part of a compound command:
+  a word left unquoted that would chain another command is refused or asked
+  about, not run. The commands don't paste your text into a shell command
+  themselves, because no heredoc or quoting written in advance holds against
+  text that may contain newlines. Their output enters the conversation, so they
+  cost what they show.
+
+The index stays in `~/.claude/focused/`, outside the plugin, so it survives
+uninstalling the plugin. Delete that folder to remove it.
+
+Without the plugin, the same code runs as a command:
 
 ```
 pipx install git+https://github.com/nicolaszimmer/focused-context   # gives `focused`
-focused index --all          # backfill from ~/.claude/projects
-focused answers              # this project's latest session: each question, its answer
-focused answers -n 3 --events   # the last 3, with the folded wake-ups and their replies
-focused find stripe webhook  # search every indexed prompt and answer in this project
+focused index --all             # backfill from ~/.claude/projects
+focused answers -n 3 --events   # the last 3 questions, with the folded wake-ups
+focused find stripe webhook     # search this project's questions and answers
 ```
 
-To index as you go, add the Stop hook to a settings file. It runs in the
-background (`async`), prints nothing, and never fails a turn: errors go to
-`~/.claude/focused/errors.log`. On a 62 MB transcript it takes 0.6 s.
-
-```json
-{
-  "hooks": {
-    "Stop": [
-      { "hooks": [ { "type": "command", "command": "focused hook stop", "async": true } ] }
-    ]
-  }
-}
-```
-
-Without installing: `PYTHONPATH=/path/to/focused-context python3 -m focused …`.
+or, from a clone, `python3 scripts/focused.py …`.
 
 ## Where it runs
 
-From the settings and cloud-session docs (code.claude.com/docs, read
-2026-11-03):
+From the settings, plugin and cloud-session docs (code.claude.com/docs, read
+2026-11-03), and an end-to-end run of the plugin in Claude Code 2.1.317:
 
-| Surface | Does the Stop hook run? | Does the index persist? |
+| Surface | Does indexing run? | Does the index persist? |
 |---|---|---|
-| Terminal, VS Code and JetBrains extensions, desktop app (local) | Yes. All four read the same settings files: put the hook in `~/.claude/settings.json` for every project, or in a project's `.claude/settings.json` | Yes, in `~/.claude/focused/` |
-| Cloud session with one repository | Only from that repository's committed `.claude/settings.json`. User settings are not read. `focused` must be installed by the environment's setup script, or called from the clone | No. The VM is reclaimed after inactivity. The conversation is restored on reopen, so the index can be rebuilt with `focused index` (not yet verified that the transcript file is restored at the same path) |
-| Cloud session with several repositories, or a thread in a project | No. Repository hooks are not read there | No. `focused index` still works when run by hand |
+| Terminal, VS Code and JetBrains extensions, desktop app (local) | Yes, with the plugin installed for your user | Yes, in `~/.claude/focused/` |
+| Cloud session with one repository | Not through the plugin: cloud sessions install neither the plugins in your user settings nor those a repository declares. Only hooks in that repository's committed `.claude/settings.json` run, calling `python3 <path>/scripts/focused.py hook stop` from a clone or an install made by the environment's setup script | No. The VM is reclaimed after inactivity. The conversation is restored on reopen, so the index can be rebuilt (not yet verified that the transcript file is restored at the same path) |
+| Cloud session with several repositories, or a thread in a project | No. Repository hooks are not read there | No. The command still works when run by hand |
+
+A prompt sent with `claude -p` or through the SDK is recorded with
+`turnOrigin: "sdk"`; `answers` lists it marked "via SDK".
 
 For step 3, Jev needs `OPENROUTER_API_KEY` and a network that reaches
 openrouter.ai. Locally that is your own environment. In the cloud it is
 the environment's settings: the one this note was written in reaches
 openrouter.ai and has the key set.
+
+## A hosted index (considered, not decided)
+
+A Cloudflare Worker could hold the index (D1) and make the Jev calls, as
+rapid-review-bot already does for its own Jev calls.
+
+What it would solve:
+
+- **Cloud and mobile sessions.** The local index dies with the cloud VM. A
+  hosted one survives it, so step 2's reload could reach an earlier cloud
+  session, and the answers list could be a page readable on a phone.
+- **One place for Jev.** The key, redaction, consent, caching by request
+  digest, the stored distributions (practice 7) and a person's labels
+  (practice 14) would live in one service. Replacing Jev with a self-hosted
+  model would change one place.
+
+What it would cost:
+
+- **Transcripts leave the machine and are stored.** Code and possibly secrets
+  would sit in a database: redaction before upload, authentication,
+  encryption, retention and deletion become requirements, not options.
+- **It does not solve getting the hook into cloud sessions.** Those sessions
+  still need the hook in each repository's `.claude/settings.json`, and the
+  environment must allow the Worker's host and hold its token (a network
+  secret).
+- **As a product for others:** multiple tenants, accounts, a privacy policy and
+  being a data processor under GDPR. It also rests on an undocumented
+  transcript format and on Claude Code features that change quickly.
 
 ## Measure first
 
@@ -210,17 +275,22 @@ events before deciding to build anything.
 
 ## Decisions
 
-Made on 2026-11-03: build step 1, in Python; try step 3 with Jev, with a
-self-hosted model as a possible replacement later.
+Made on 2026-11-03:
+
+- Build step 1, in Python.
+- Try step 3 with Jev, with a self-hosted model as a possible replacement
+  later.
+- Ship it as a plugin, with the index kept in `~/.claude/focused/`.
 
 Open:
 
-1. Whether to switch the Stop hook on, and where: your user settings for
-   local sessions, and the `.claude/settings.json` of the repositories you
-   use in cloud sessions.
-2. Whether step 1 does what you need after some use. Steps 2 and 3 build on
+1. Whether step 1 does what you need after some use. Steps 2 and 3 build on
    it, so they wait for this.
-3. Where step 3's labels come from: an hour of your own marking, or the
+2. Where step 3's labels come from: an hour of your own marking, or the
    index's own record once it has run for a while.
-4. Whether 30 days, following `cleanupPeriodDays`, is the right retention
+3. Whether 30 days, following `cleanupPeriodDays`, is the right retention
    for the index.
+4. Whether to add a hosted index for cloud and mobile sessions (see "A hosted
+   index"), and if so, for you alone or for others.
+5. Whether to add the hook to the `.claude/settings.json` of the repositories
+   you use in cloud sessions.

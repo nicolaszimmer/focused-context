@@ -6,10 +6,15 @@ no model is asked anything.
 - A turn starts at each prompt: one a person typed, or one Claude Code
   started on its own (a wake-up, a notification, hook feedback).
 - A prompt is a person's when the transcript says so (`origin.kind` or
-  `turnOrigin` is "human"). A prompt that records another origin, or that is
-  marked `isMeta` or `isCompactSummary`, is synthetic, and is filed under the
-  person's turn it followed. A prompt with no origin at all, as older
+  `turnOrigin` is "human"). A prompt sent through the SDK or `claude -p`
+  records `turnOrigin: "sdk"` and no `origin`: it comes from the caller, so it
+  is listed too, marked "via SDK". A prompt that records another origin, or
+  that is marked `isMeta` or `isCompactSummary`, is synthetic, and is filed
+  under the person's turn it followed. A prompt with no origin at all, as older
   transcripts store them, is "unknown" and is listed with that mark.
+- An `isMeta` entry that arrives before Claude has replied is the expansion of
+  the prompt it follows (a slash command's or skill's text), so it stays in
+  that turn. A slash command is shown as "/name args".
 - A turn's answer is its last text, provided no tool call came after it.
 - Subagent entries (`isSidechain`) are skipped.
 """
@@ -36,6 +41,19 @@ PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 
 HUMAN = "human"
 UNKNOWN = "unknown"
+SDK = "sdk"
+LISTED = (HUMAN, UNKNOWN, SDK)  # turns a person may have started
+COMMAND_NAME = re.compile(r"<command-name>\s*(.*?)\s*</command-name>", re.S)
+COMMAND_ARGS = re.compile(r"<command-args>\s*(.*?)\s*</command-args>", re.S)
+
+
+def prompt_text(text: str) -> str:
+    """A slash command's markup as the person typed it: "/name args"."""
+    name = COMMAND_NAME.search(text or "")
+    if not name:
+        return text
+    args = COMMAND_ARGS.search(text)
+    return f"{name.group(1)} {args.group(1)}".strip() if args else name.group(1)
 
 
 def tokens(value) -> int:
@@ -85,7 +103,7 @@ class Turn:
     @property
     def listed(self) -> bool:
         """A turn a person may have started: shown in the answers list."""
-        return self.origin in (HUMAN, UNKNOWN)
+        return self.origin in LISTED
 
     @property
     def answer(self) -> Optional[str]:
@@ -181,10 +199,13 @@ def parse_entries(entries: Iterable[dict]) -> Transcript:
                 continue
             origin = provenance(entry)
             prompt = text_of(content)
-            bucket = {HUMAN: "human prompts", UNKNOWN: "prompts of unknown origin"}.get(
+            if origin == "meta" and current is not None and not current.replies and not current.tool_calls:
+                shares["command and skill expansions"] += tokens(prompt)
+                continue  # the expansion of the prompt just before it, not a turn of its own
+            bucket = {HUMAN: "human prompts", UNKNOWN: "prompts of unknown origin", SDK: "human prompts"}.get(
                 origin, "synthetic prompts (wake-ups, notifications, hook feedback)")
             shares[bucket] += tokens(prompt)
-            start(entry, origin, prompt)
+            start(entry, origin, prompt_text(prompt))
 
         elif kind == "assistant":
             for block in content or []:
