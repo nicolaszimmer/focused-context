@@ -5,11 +5,11 @@ disable-model-invocation: true
 allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/focused.py" *)
 ---
 
-Run this command with the Bash tool, adding each word the user gave at the end as its
-own single-quoted argument, with any single quote inside a word escaped as `'\''`:
+Run this command with the Bash tool, adding each word the user gave at the end, after
+`--`, as its own single-quoted argument, with any single quote inside a word escaped as `'\''`:
 
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/focused.py" --in-session "${CLAUDE_SESSION_ID}" find
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/focused.py" --in-session "${CLAUDE_SESSION_ID}" find --
 ```
 
 The user's words: $ARGUMENTS

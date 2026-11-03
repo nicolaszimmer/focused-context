@@ -95,7 +95,7 @@ class ParseTest(Fixture):
     def test_turns_and_origins(self):
         turns = parse(self.transcript).turns
         self.assertEqual([t.origin for t in turns],
-                         ["human", "task-notification", "meta", "human", "human", "unknown"])
+                         ["human", "task-notification", "meta", "human", "unknown"])
 
     def test_wake_up_reply_does_not_replace_the_answer(self):
         first = parse(self.transcript).turns[0]
@@ -108,11 +108,22 @@ class ParseTest(Fixture):
         self.assertEqual(turns[1].answer, "No action needed.")
 
     def test_text_followed_by_a_tool_call_is_not_an_answer(self):
-        self.assertIsNone(parse(self.transcript).turns[3].answer)
+        from focused.transcript import parse_entries
+        turns = parse_entries([user("x1", "q", **HUMAN), assistant(text("Looking."), tool("t9", "Read", file_path="x"))]).turns
+        self.assertIsNone(turns[0].answer)
 
-    def test_queued_message_is_a_question(self):
-        queued = parse(self.transcript).turns[4]
-        self.assertEqual((queued.prompt, queued.answer), ("also this", "Both done."))
+    def test_a_message_sent_while_working_joins_the_turn(self):
+        turn = parse(self.transcript).turns[3]  # the image prompt, still working when "also this" came
+        self.assertEqual((turn.prompt.strip(), turn.answer), ("(sent while Claude was working) also this", "Both done."))
+
+    def test_a_message_sent_after_the_answer_starts_a_turn(self):
+        from focused.transcript import parse_entries
+        entries = [user("x1", "first", **HUMAN), assistant(text("Done.")),
+                   {"type": "attachment", "uuid": "x2", "sessionId": "s1", "timestamp": "2026-11-03T06:20:00Z",
+                    "attachment": {"type": "queued_command", "prompt": "next", "origin": {"kind": "human"}}},
+                   assistant(text("Next done."))]
+        queued = parse_entries(entries).turns[1]
+        self.assertEqual((queued.origin, queued.prompt, queued.answer), ("human", "next", "Next done."))
 
     def test_facts_from_tool_calls(self):
         first = parse(self.transcript).turns[0]
@@ -139,7 +150,7 @@ class StoreTest(Fixture):
     def test_indexing_twice_adds_no_rows(self):
         conn = self.index()
         self.index()
-        self.assertEqual(self.count(conn), 6)
+        self.assertEqual(self.count(conn), 5)
         self.assertEqual(self.count(conn, "SELECT count(*) FROM turns_fts WHERE turns_fts MATCH 'hooks'"), 1)
 
     def test_stop_hook_answer_wins_over_a_lagging_transcript(self):
@@ -147,6 +158,51 @@ class StoreTest(Fixture):
         self.index()
         row = conn.execute("SELECT answer, answer_source FROM turns WHERE turn_key = 'old'").fetchone()
         self.assertEqual(tuple(row), ("The final words.", "stop-hook"))
+
+    def test_a_late_stop_hook_leaves_the_turn_that_began_since_alone(self):
+        conn = self.index(stop_message="Hooks only add context.")  # u1's answer; 'old' has begun since
+        rows = {r[0]: tuple(r[1:]) for r in conn.execute("SELECT turn_key, answer, answer_source FROM turns")}
+        self.assertEqual(rows["u1"], ("Hooks only add context.", "transcript"))
+        self.assertEqual(rows["old"], (None, None))
+
+    def test_a_stop_message_matching_an_earlier_narration_still_answers_the_latest_turn(self):
+        conn = self.index(stop_message="Looking.")  # u1 said this before its tool calls, not as its answer
+        rows = dict(conn.execute("SELECT turn_key, answer FROM turns").fetchall())
+        self.assertEqual(rows["u1"], "Hooks only add context.")
+        self.assertEqual(rows["old"], "Looking.")
+
+    def test_reindexing_drops_turns_the_transcript_no_longer_splits_off(self):
+        conn = self.index()
+        conn.execute("INSERT INTO turns (session_id, turn_key, seq, origin, prompt) VALUES ('s1', 'q1', 9, 'human', 'also this')")
+        conn.commit()
+        self.index()
+        self.assertEqual(self.count(conn, "SELECT count(*) FROM turns WHERE turn_key = 'q1'"), 0)
+        self.assertEqual(self.count(conn), 5)
+
+    def test_a_read_that_finds_no_turns_keeps_the_stored_ones(self):
+        conn = self.index()
+        kept = self.transcript.read_text()
+        self.transcript.write_text("")
+        self.index()
+        self.assertEqual(self.count(conn), 5)
+        self.transcript.write_text(kept)
+
+    @unittest.skipUnless(hasattr(sqlite3.Connection, "setlimit"), "setlimit needs Python 3.11")
+    def test_a_session_with_more_turns_than_sqlite_takes_variables_reindexes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = Path(tmp) / "long.jsonl"
+            entries = [user(f"q{n}", f"question {n}", **HUMAN) for n in range(120)]
+            transcript.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+            with closing(store.connect(Path(tmp) / "x.sqlite")) as conn:
+                conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 50)
+                store.index_transcript(conn, transcript, now=self.now)
+                store.index_transcript(conn, transcript, now=self.now)
+                self.assertEqual(self.count(conn), 120)
+
+    def test_a_prompt_with_no_text_shows_as_such(self):
+        out = cli.format_turns([{"turn_key": "i1", "origin": "human", "parent_key": None, "started_at": None,
+                                 "prompt": "", "answer": None, "files": "[]", "commits": "[]", "pull_requests": "[]"}])
+        self.assertIn("Q: (no text)", out)
 
     def test_search(self):
         conn = self.index()
@@ -172,7 +228,7 @@ class StoreTest(Fixture):
             path = Path(f"{db}{suffix}")
             self.assertTrue(path.exists(), path)
             self.assertEqual(os.stat(path).st_mode & 0o777, 0o600, path)
-        self.assertEqual(self.count(conn), 6)
+        self.assertEqual(self.count(conn), 5)
 
 
 class CliTest(Fixture):
@@ -192,7 +248,7 @@ class CliTest(Fixture):
             code, out = self.run_cli("index", str(bad), str(missing), str(self.transcript))
         self.assertEqual(code, 1)
         self.assertIn("bad.jsonl: 1 questions", out)  # the cut-off character no longer stops the read
-        self.assertIn("s1.jsonl: 4 questions", out)
+        self.assertIn("s1.jsonl: 3 questions", out)
         self.assertIn("missing.jsonl: skipped", err.getvalue())
 
     def run_cli(self, *args, stdin=None):
@@ -207,7 +263,7 @@ class CliTest(Fixture):
         self.assertEqual((code, out), (0, ""))
         conn = sqlite3.connect(store.db_for_transcript(self.transcript))
         self.connections.append(conn)
-        self.assertEqual(conn.execute("SELECT count(*) FROM turns").fetchone()[0], 6)
+        self.assertEqual(conn.execute("SELECT count(*) FROM turns").fetchone()[0], 5)
 
     def test_stop_hook_fails_open(self):
         code, out = self.run_cli("hook", "stop", stdin="not json")
@@ -222,7 +278,7 @@ class CliTest(Fixture):
         self.assertIn("A: Hooks only add context.", out)
         self.assertIn("+2 events: 1 task-notification, 1 meta", out)
         self.assertIn("-> No action needed.", out)
-        self.assertIn("Q: (no text)", out)
+        self.assertIn("Q: (sent while Claude was working) also this", out)  # the image prompt has no text
         self.assertIn("origin unknown", out)
         self.assertIn("How do hooks work? [...]", out)
 
@@ -230,7 +286,7 @@ class CliTest(Fixture):
         db = str(store.db_for_transcript(self.transcript))
         self.run_cli("--db", db, "index", str(self.transcript))
         _, out = self.run_cli("--db", db, "answers", "-n", "1")
-        self.assertIn("## 4.", out)
+        self.assertIn("## 3.", out)
         self.assertNotIn("Hooks only add context.", out)
 
     def test_find(self):
@@ -273,9 +329,42 @@ class HeadlessAndCommandTest(unittest.TestCase):
         rows = [{"turn_key": t.key, "origin": t.origin, "parent_key": t.parent_key, "started_at": t.started_at,
                  "prompt": t.prompt, "answer": t.answer, "files": "[]", "commits": "[]", "pull_requests": "[]"}
                 for t in parse_entries(self.ENTRIES).turns]
+        rows.append(dict(rows[1], turn_key="p4", prompt="/focused-answers -n 2", answer="copy"))  # a repository's copy
+        rows.append(dict(rows[1], turn_key="p6", prompt="/focused-review", answer="someone else's command"))
         out = format_turns(rows)
         self.assertIn("Q: Reply with exactly: the sky is blue", out)
         self.assertNotIn("/focused:answers", out)
+        self.assertNotIn("/focused-answers", out)
+        self.assertIn("Q: /focused-review", out)  # only focused's own names are left out
+
+    def test_the_list_and_the_search_agree_on_what_is_focuseds_own(self):
+        from focused.transcript import is_own_command
+        self.assertTrue(is_own_command("/focused-find sky"))
+        self.assertTrue(is_own_command("/focused-answers"))
+        self.assertTrue(is_own_command("/focused-find\tsky"))
+        self.assertTrue(is_own_command("/focused-answers\n\n(sent while Claude was working) also this"))
+        self.assertFalse(is_own_command("/focused-answersx"))
+        self.assertFalse(is_own_command(" /focused-find sky"))
+        self.assertFalse(is_own_command("/focused-review"))
+        self.assertFalse(is_own_command("/FOCUSED-FIND sky"))  # names are case-sensitive, in the search too
+
+    def test_find_skips_a_repositorys_copies_of_the_commands_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = Path(tmp) / "s9.jsonl"
+            copy = dict(self.ENTRIES[2], uuid="p5", message={"content": "<command-name>/focused-find</command-name>\n"
+                                                                       "<command-args>sky</command-args>"})
+            other = dict(self.ENTRIES[2], uuid="p7", timestamp="2026-11-03T07:35:00Z",
+                         message={"content": "<command-name>/focused-review</command-name>"})
+            shout = dict(self.ENTRIES[2], uuid="p8", timestamp="2026-11-03T07:36:00Z",
+                         message={"content": "<command-name>/FOCUSED-FIND</command-name><command-args>sky</command-args>"})
+            entries = self.ENTRIES[:2] + [copy, assistant(text("- the sky is blue")),
+                                          other, assistant(text("sky check done")),
+                                          shout, assistant(text("Unknown command, sky"))]
+            transcript.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+            with closing(store.connect(Path(tmp) / "x.sqlite")) as conn:
+                store.index_transcript(conn, transcript, now=datetime(2026, 11, 3, tzinfo=timezone.utc))
+                # The list keeps /FOCUSED-FIND (names are case-sensitive), so the search does too.
+                self.assertEqual(sorted(h["turn_key"] for h in store.search(conn, ["sky"])), ["p1", "p7", "p8"])
 
     def test_find_skips_the_plugins_own_command_turns(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -317,7 +406,7 @@ class PluginTest(unittest.TestCase):
                                   capture_output=True, env=env, cwd=tmp)
             self.assertEqual((done.returncode, done.stdout), (0, ""))
             with closing(sqlite3.connect(Path(tmp) / "home" / "-p.sqlite")) as conn:
-                self.assertEqual(conn.execute("SELECT count(*) FROM turns").fetchone()[0], 6)
+                self.assertEqual(conn.execute("SELECT count(*) FROM turns").fetchone()[0], 5)
 
 
 class InSessionTest(Fixture):

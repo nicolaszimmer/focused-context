@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import store
-from .transcript import LISTED
+from .transcript import LISTED, is_own_command
 
 
 class SkillMessage(Exception):
@@ -60,8 +60,8 @@ def _list(value: str) -> list:
 
 
 def is_question(row) -> bool:
-    """A turn a person may have started, other than the plugin's own /focused: commands."""
-    return row["origin"] in LISTED and not (row["prompt"] or "").startswith("/focused:")
+    """A turn a person may have started, other than focused's own commands."""
+    return row["origin"] in LISTED and not is_own_command(row["prompt"])
 
 
 def format_turns(rows, full: bool = False, events: bool = False, number_from: int = 1) -> str:
