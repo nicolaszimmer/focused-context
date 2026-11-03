@@ -281,6 +281,13 @@ class HeadlessAndCommandTest(unittest.TestCase):
         self.assertNotIn("/focused-answers", out)
         self.assertIn("Q: /focused-review", out)  # only focused's own names are left out
 
+    def test_the_list_and_the_search_agree_on_what_is_focuseds_own(self):
+        from focused.transcript import is_own_command
+        self.assertTrue(is_own_command("/focused-find sky"))
+        self.assertTrue(is_own_command("/focused-answers"))
+        self.assertFalse(is_own_command("/focused-find\tsky"))  # the SQL's '/focused-find %' doesn't match it either
+        self.assertFalse(is_own_command("/focused-review"))
+
     def test_find_skips_a_repositorys_copies_of_the_commands_too(self):
         with tempfile.TemporaryDirectory() as tmp:
             transcript = Path(tmp) / "s9.jsonl"

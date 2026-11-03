@@ -52,9 +52,10 @@ REPOSITORY_COMMANDS = ("/focused-answers", "/focused-find")
 
 
 def is_own_command(prompt) -> bool:
+    # A slash command is stored as "/name args" with one space (prompt_text), which is also
+    # what the find query in store.search matches, so both split on that space only.
     prompt = prompt or ""
-    name = prompt.split(None, 1)[0] if prompt.strip() else ""
-    return prompt.startswith(PLUGIN_NAMESPACE) or name in REPOSITORY_COMMANDS
+    return prompt.startswith(PLUGIN_NAMESPACE) or prompt.split(" ", 1)[0] in REPOSITORY_COMMANDS
 COMMAND_NAME = re.compile(r"<command-name>\s*(.*?)\s*</command-name>", re.S)
 COMMAND_ARGS = re.compile(r"<command-args>\s*(.*?)\s*</command-args>", re.S)
 
