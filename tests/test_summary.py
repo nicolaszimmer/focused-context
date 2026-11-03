@@ -243,7 +243,7 @@ class RetentionTest(Fixture):
         (home / "summaries").mkdir(parents=True)
         stale = home / "summaries" / "elsewhere.md"
         stale.write_text("from a project never indexed again")
-        old = time.time() - 40 * 86400
+        old = (self.now - timedelta(days=40)).timestamp()  # on the index's clock, like the cutoff
         os.utime(stale, (old, old))
         self.index()
         self.assertFalse(stale.exists())
