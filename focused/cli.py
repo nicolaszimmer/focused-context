@@ -255,6 +255,16 @@ def _reindex(conn, path) -> None:
         _log("reindex before the summary", str(path))
 
 
+def _summary_file(session: str) -> Path:
+    """Where a session's full summary is kept: directly in summaries/, named after the
+    session. A session id that isn't a plain file name is refused, so no summary is
+    written, or pointed at, anywhere else."""
+    name = f"{session}.md"
+    if not session or Path(name).name != name or name.startswith("."):
+        raise ValueError(f"session id {session!r} is not a plain name")
+    return store.home() / "summaries" / name
+
+
 def _write_private(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as handle:
@@ -281,7 +291,7 @@ def cmd_hook_session_start(args) -> int:
                 target = _previous_session(conn, db, current)
             if not target:
                 return 0
-            full_path = store.home() / "summaries" / f"{target}.md"
+            full_path = _summary_file(target)
             short, full = summary.build(conn, target, str(full_path))
         if short:
             _write_private(full_path, full)
@@ -406,16 +416,19 @@ def cmd_context(args) -> int:
         session = args.session or args.in_session or store.latest_session(conn)
         if not session:
             return _fail(args, "No indexed sessions for this project.", 1)
-        full_path = store.home() / "summaries" / f"{session}.md"
-        short, full = summary.build(conn, session, str(full_path))
-        if not short and args.in_session and not args.session:
-            # Right after /clear the session holds only this command: show the one cleared,
-            # as the SessionStart hook did.
-            previous = _previous_session(conn, db, args.in_session)
-            if previous:
-                session = previous
-                full_path = store.home() / "summaries" / f"{session}.md"
-                short, full = summary.build(conn, session, str(full_path))
+        try:
+            full_path = _summary_file(session)
+            short, full = summary.build(conn, session, str(full_path))
+            if not short and args.in_session and not args.session:
+                # Right after /clear the session holds only this command: show the one
+                # cleared, as the SessionStart hook did.
+                previous = _previous_session(conn, db, args.in_session)
+                if previous:
+                    session = previous
+                    full_path = _summary_file(session)
+                    short, full = summary.build(conn, session, str(full_path))
+        except ValueError as error:
+            return _fail(args, f"focused: {error}.", 2)
     if not short:
         return _fail(args, f"Session {session} has no messages indexed.", 1)
     _write_private(full_path, full)

@@ -187,6 +187,20 @@ class SessionStartTest(Fixture):
         self.assertIn(f"It is in this file: {full}", out.getvalue())
         self.assertIn("# Where we left off", full.read_text())
 
+    def test_a_session_id_that_is_not_a_plain_name_writes_no_summary(self):
+        self.run_hook("stop", {"session_id": "s1", "transcript_path": str(self.transcript)})
+        db = str(store.db_for_transcript(self.transcript))
+        home = Path(os.environ["FOCUSED_HOME"])
+        for bad in ("../escaped", "a/b", ".hidden"):
+            with redirect_stdout(io.StringIO()) as out:
+                code = cli.main(["--db", db, "context", "--session", bad])
+            self.assertEqual(code, 2, bad)
+        self.assertFalse((home / "escaped.md").exists())
+        self.assertFalse((home / "summaries" / "a").exists())
+        with self.assertRaises(ValueError):
+            cli._summary_file("../escaped")
+        self.assertEqual(cli._summary_file("s1"), home / "summaries" / "s1.md")
+
     def test_the_context_command_names_this_session_when_there_is_no_other(self):
         fresh = self.transcript.parent / "s2.jsonl"
         fresh.write_text(json.dumps(user("c1", "<command-name>/focused:context</command-name>", **HUMAN) | {"sessionId": "s2"}) + "\n")

@@ -98,8 +98,9 @@ detail matters.
 - **After compaction** it is the current session's, beside Claude Code's own
   compaction summary.
 - `/focused:context` shows it, and `/focused:context --full` the whole of it. A
-  full summary longer than the Bash tool returns at once (30,000 characters by
-  default) is read from its file instead.
+  full summary over 25,000 characters is read from its file instead, since the
+  Bash tool returns at most 30,000 by default. The command may read files in
+  `~/.claude/focused/summaries/` without asking, and no others.
 
 Before building the summary, the hook re-reads the transcript into the index, which
 takes under a second. It asks Jev nothing, so it stays quick, and if the re-read
