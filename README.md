@@ -164,8 +164,22 @@ on the `PATH` as `python3`, standard library only):
 On older versions: `/plugin marketplace add nicolaszimmer/focused-context`,
 then `/plugin install focused@focused-context`.
 
-Installed for your user, the plugin is on in every project on that machine.
-`/plugin disable focused@focused-context` switches it off. It brings:
+**Installed for your user, the plugin indexes every project on that machine.**
+What it stores per turn is your prompt, Claude's final answer, the paths of
+files edited, commit hashes and pull request URLs: no tool output and no file
+contents. To leave a sensitive repository out, run this in it:
+
+```
+claude plugin disable focused@focused-context --scope local
+```
+
+That writes `"enabledPlugins": {"focused@focused-context": false}` to the
+repository's `.claude/settings.local.json`, which is not committed, and the
+hooks stop running there. Checked on 2026-11-03: of two projects under one
+user install, only the one without this setting was indexed. To switch the
+plugin off everywhere, run `/plugin disable focused@focused-context`.
+
+It brings:
 
 - **Two hooks.** `Stop` indexes after each turn, in the background, so the turn
   never waits for it. `SessionEnd` indexes once more when you exit or run
