@@ -144,8 +144,10 @@ comes last, if at all.
 - Built: `sessions`, and `turns` with an FTS5 index on prompt and answer.
   The file lives in `~/.claude/focused/<project>.sqlite`, where `<project>`
   is Claude Code's own folder name for the project. It is readable by its
-  owner only, and turns older than `cleanupPeriodDays` (30 by default) are
-  deleted on each run, so the index never outlives the transcripts.
+  owner only. Turns older than `cleanupPeriodDays` (30 by default) are
+  deleted each time `focused` indexes a transcript, so an index that is
+  never run again keeps them after Claude Code has deleted the transcript.
+  Delete `~/.claude/focused/` to remove them at once.
 - For step 3: `chunks`, and `scores`, which store the scorer's full
   distribution with the model and a digest of the question, so a threshold
   can be replayed offline (practices 5 and 7).

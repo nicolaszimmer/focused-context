@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import sys
 import traceback
 from collections import Counter
@@ -109,13 +110,18 @@ def cmd_index(args) -> int:
     if not paths:
         print("Nothing to index: name a transcript, or pass --all.", file=sys.stderr)
         return 2
-    for path in paths:
-        conn = store.connect(_db(args, path))
-        parsed = store.index_transcript(conn, path)
-        conn.close()
+    failed = 0
+    for path in paths:  # one bad transcript must not stop the rest
+        try:
+            with closing(store.connect(_db(args, path))) as conn:
+                parsed = store.index_transcript(conn, path)
+        except (OSError, ValueError, sqlite3.Error) as error:
+            print(f"{path}: skipped ({error})", file=sys.stderr)
+            failed += 1
+            continue
         listed = sum(1 for t in parsed.turns if t.listed)
         print(f"{path}: {listed} questions, {len(parsed.turns) - listed} other turns")
-    return 0
+    return 1 if failed else 0
 
 
 def cmd_answers(args) -> int:

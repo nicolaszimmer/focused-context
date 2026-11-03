@@ -108,7 +108,9 @@ class Transcript:
 
 
 def load(path) -> Iterator[dict]:
-    with open(path, encoding="utf-8") as handle:
+    # errors="replace": a character cut off at the end of a file still being written
+    # must not stop the read.
+    with open(path, encoding="utf-8", errors="replace") as handle:
         for line in handle:
             line = line.strip()
             if not line:

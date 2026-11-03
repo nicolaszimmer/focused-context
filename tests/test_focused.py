@@ -4,7 +4,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
@@ -174,6 +174,25 @@ class StoreTest(Fixture):
 
 
 class CliTest(Fixture):
+    def setUp(self):
+        super().setUp()
+        # The CLI prunes by the real clock and the fixture's dates are fixed, so keep
+        # them; Fixture.tearDown restores the environment.
+        os.environ["FOCUSED_RETENTION_DAYS"] = "36500"
+
+    def test_index_skips_a_bad_transcript_and_goes_on(self):
+        bad = self.transcript.parent / "bad.jsonl"
+        bad.write_bytes(b'{"type":"user","uuid":"b1","sessionId":"s2","origin":{"kind":"human"},'
+                        b'"message":{"content":"caf\xc3"}}\n')
+        missing = self.transcript.parent / "missing.jsonl"
+        err = io.StringIO()
+        with redirect_stderr(err):
+            code, out = self.run_cli("index", str(bad), str(missing), str(self.transcript))
+        self.assertEqual(code, 1)
+        self.assertIn("bad.jsonl: 1 questions", out)  # the cut-off character no longer stops the read
+        self.assertIn("s1.jsonl: 4 questions", out)
+        self.assertIn("missing.jsonl: skipped", err.getvalue())
+
     def run_cli(self, *args, stdin=None):
         out = io.StringIO()
         with redirect_stdout(out), mock.patch("sys.stdin", io.StringIO(stdin or "")):
