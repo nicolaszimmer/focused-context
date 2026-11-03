@@ -84,7 +84,7 @@ class InstallTest(unittest.TestCase):
         self.assertFalse((self.skills / "focused-context").exists())
 
     def test_broken_settings_and_foreign_skills_are_left_alone(self):
-        for broken in ("{ not json", '{"hooks": ["not", "an", "object"]}', '{"env": "x"}'):
+        for broken in ("{ not json", '{"hooks": ["not", "an", "object"]}', '{"env": "x"}', '{"hooks": {"Stop": {}}}'):
             self.settings.write_text(broken)
             with self.assertRaises(ValueError):
                 self.run_install()

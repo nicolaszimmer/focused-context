@@ -104,6 +104,9 @@ def _read(path: Path) -> dict:
     for key in ("hooks", "env"):
         if settings.get(key) is not None and not isinstance(settings[key], dict):
             raise ValueError(f"{path} has a \"{key}\" value that isn't an object, so it was left as it is")
+    for event, groups in (settings.get("hooks") or {}).items():
+        if not isinstance(groups, list):
+            raise ValueError(f"{path} has \"{event}\" hooks that aren't a list, so it was left as it is")
     return settings
 
 
