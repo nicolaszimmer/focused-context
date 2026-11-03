@@ -193,8 +193,8 @@ It brings:
 - **Two commands.** `/focused:answers [-n N] [--events] [--full]` lists this
   session's questions with their answers; `/focused:find <words>` searches every
   question and answer in this project. Each reindexes the session first, and
-  leaves out focused's own commands (`/focused:…`, and a repository's
-  `/focused-…` copies, below). Claude runs them through the
+  leaves out focused's own commands (`/focused:…`, and a repository's copies
+  `/focused-answers` and `/focused-find`, below). Claude runs them through the
   Bash tool, passing each of your words as its own single-quoted argument, with
   a `'` inside a word written as `'\''`. The quoting is Claude's, under Claude
   Code's normal permission checks, which check each part of a compound command:

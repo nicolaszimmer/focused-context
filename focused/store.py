@@ -201,7 +201,9 @@ def search(conn: sqlite3.Connection, words: list, limit: int = 10) -> list:
     return conn.execute(
         "SELECT t.*, snippet(turns_fts, -1, '[', ']', ' … ', 12) AS hit "
         "FROM turns_fts JOIN turns t ON t.id = turns_fts.rowid "
-        # focused's own commands (transcript.OWN_COMMANDS) answer with copies of other answers.
-        "WHERE turns_fts MATCH ? AND t.prompt NOT LIKE '/focused:%' AND t.prompt NOT LIKE '/focused-%' "
+        # focused's own commands (transcript.is_own_command) answer with copies of other answers.
+        "WHERE turns_fts MATCH ? AND t.prompt NOT LIKE '/focused:%' "
+        "AND t.prompt NOT IN ('/focused-answers', '/focused-find') "
+        "AND t.prompt NOT LIKE '/focused-answers %' AND t.prompt NOT LIKE '/focused-find %' "
         "ORDER BY rank LIMIT ?",
         (query, limit)).fetchall()
