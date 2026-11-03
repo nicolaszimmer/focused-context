@@ -211,6 +211,7 @@ class _SessionLock:
 
 
 CLEARED = "cleared.json"
+FULL_PRINTED = 25_000  # longest --full summary printed; the Bash tool returns 30,000 by default
 
 
 def _note_cleared(db: Path, session: str) -> None:
@@ -238,9 +239,20 @@ def _previous_session(conn, db: Path, current: Optional[str]) -> Optional[str]:
         "SELECT session_id FROM sessions WHERE session_id IS NOT ? ORDER BY last_at DESC LIMIT 1",
         (current,))), None)
     row = conn.execute("SELECT transcript_path FROM sessions WHERE session_id = ?", (target,)).fetchone()
-    if row and row[0] and os.path.exists(row[0]):
-        store.index_transcript(conn, row[0])  # its last turns, if the Stop hook hadn't got to them
+    if row and row[0]:
+        _reindex(conn, row[0])  # its last turns, if the Stop hook hadn't got to them
     return target
+
+
+def _reindex(conn, path) -> None:
+    """Re-read a transcript before summarizing it. If that fails (the index locked past
+    its timeout, the file gone), the summary is built from the index as it is."""
+    if not os.path.exists(path):
+        return
+    try:
+        store.index_transcript(conn, path)
+    except (OSError, ValueError, sqlite3.Error):
+        _log("reindex before the summary", str(path))
 
 
 def _write_private(path: Path, text: str) -> None:
@@ -263,8 +275,7 @@ def cmd_hook_session_start(args) -> int:
             return 0
         with closing(store.connect(db)) as conn:
             if source == "compact":
-                if os.path.exists(path):
-                    store.index_transcript(conn, path)
+                _reindex(conn, path)
                 target = current
             else:
                 target = _previous_session(conn, db, current)
@@ -400,13 +411,20 @@ def cmd_context(args) -> int:
         if not short and args.in_session and not args.session:
             # Right after /clear the session holds only this command: show the one cleared,
             # as the SessionStart hook did.
-            session = _previous_session(conn, db, args.in_session)
-            if session:
+            previous = _previous_session(conn, db, args.in_session)
+            if previous:
+                session = previous
                 full_path = store.home() / "summaries" / f"{session}.md"
                 short, full = summary.build(conn, session, str(full_path))
     if not short:
         return _fail(args, f"Session {session} has no messages indexed.", 1)
     _write_private(full_path, full)
+    if args.full and len(full) > FULL_PRINTED:
+        # The Bash tool returns at most 30,000 characters by default (BASH_MAX_OUTPUT_LENGTH),
+        # so a longer summary is read from its file instead (skills/context/SKILL.md).
+        print(f"The full summary is {len(full):,} characters, more than the Bash tool returns at once. "
+              f"It is in this file: {full_path}")
+        return 0
     print(full if args.full else short)
     return 0
 

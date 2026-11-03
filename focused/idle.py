@@ -129,13 +129,7 @@ def _stopped(session: str, stamp: str) -> bool:
 
 def _remember(session: str, stamp: str) -> None:
     path = _note(session)
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    for old in path.parent.iterdir():  # a note only matters until the next reply
-        try:
-            if time.time() - old.stat().st_mtime > 30 * 86400:
-                old.unlink()
-        except OSError:
-            pass
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)  # store.prune deletes old notes
     with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as handle:
         handle.write(stamp)
 

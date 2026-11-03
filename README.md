@@ -97,10 +97,14 @@ detail matters.
   `SessionEnd` hook notes which one that was.
 - **After compaction** it is the current session's, beside Claude Code's own
   compaction summary.
-- `/focused:context` shows it, and `/focused:context --full` the whole of it.
+- `/focused:context` shows it, and `/focused:context --full` the whole of it. A
+  full summary longer than the Bash tool returns at once (30,000 characters by
+  default) is read from its file instead.
 
-The hook only reads the index, so it adds no Jev requests and stays quick. Without
-Jev, every turn shows as "not read by Jev".
+Before building the summary, the hook re-reads the transcript into the index, which
+takes under a second. It asks Jev nothing, so it stays quick, and if the re-read
+fails, the summary comes from the index as it is. Without Jev, every turn shows as
+"not read by Jev".
 
 ## After an hour without a reply
 
@@ -153,8 +157,13 @@ Original prompt: Reply with just the word two.
   answer; `parts` of your messages, with Jev's kinds; `paras`, every paragraph
   Claude wrote, with full-text search; and `pairs`, Jev's answer for each part
   and paragraph.
+- Beside the databases: `summaries/<session>.md`, the full summary of each
+  session summarized, and `idle/<session>`, the note that a message was stopped
+  after an hour without a reply.
 - Turns older than `cleanupPeriodDays` are deleted, with their parts,
-  paragraphs and Jev's answers, each time `focused` indexes a transcript. An
+  paragraphs and Jev's answers, each time `focused` indexes a transcript. A
+  session left with no turns loses its summary and note too, and any summary or
+  note not rewritten within that time is deleted as well. An
   index that is never run again keeps them after Claude Code has deleted the
   transcript. Delete `~/.claude/focused/` to remove them at once.
 
