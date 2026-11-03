@@ -356,6 +356,19 @@ class ChooseTest(Fixture):
         code, out = self.context("--session", "nothing like it")
         self.assertIn("Session nothing like it has no messages indexed.", out)
 
+    def test_a_relative_db_path_works_with_a_named_session(self):
+        self.session("s1", 0, ["How do hooks work?"], title="Hooks and the index")
+        db = store.db_for_transcript(self.project / "s1.jsonl")
+        cwd = os.getcwd()
+        os.chdir(db.parent)
+        try:
+            with redirect_stdout(io.StringIO()) as out:
+                code = cli.main([f"--db={db.name}", "answers", "--session", "hooks"])
+        finally:
+            os.chdir(cwd)
+        self.assertEqual(code, 0)
+        self.assertTrue(out.getvalue().startswith("# “Hooks and the index” (s1)"))
+
     def test_find_and_answers_name_a_session_by_its_title(self):
         self.session("s1", 0, ["How do hooks work?"], title="Hooks and the index")
         db = str(store.db_for_transcript(self.project / "s1.jsonl"))

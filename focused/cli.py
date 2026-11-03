@@ -167,10 +167,12 @@ def _db_for_session(session: str) -> Path:
 
 
 def _holds(db: Path, session: str) -> bool:
+    """Whether an index holds turns of a session; read-only, so a missing index stays missing."""
     try:
-        with closing(sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)) as conn:
+        # resolve(): a relative --db can't be written as a file URI.
+        with closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
             return conn.execute("SELECT 1 FROM turns WHERE session_id = ? LIMIT 1", (session,)).fetchone() is not None
-    except sqlite3.Error:
+    except (sqlite3.Error, ValueError):
         return False
 
 
