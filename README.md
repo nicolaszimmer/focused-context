@@ -470,6 +470,14 @@ Made on 2026-11-03 by the maintainer:
   in, then those worked on together with them in another session. Recall and the choice
   of a session follow it.
 
+Made on 2026-11-04 by the maintainer:
+
+- `/focused-recall` keeps the permission pattern the other commands have: `focused.py`
+  with any arguments.
+- Recalled text quoted as JSON strings, under a header that says it is data, is enough of
+  a guard against what an earlier session's text may say.
+- The hosted index runs on Workers Paid.
+
 Open:
 
 1. Whether 30 days, following `cleanupPeriodDays`, is the right retention.

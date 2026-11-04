@@ -64,10 +64,10 @@ planned
 | **Local index** | One SQLite database per project, readable by its owner only, pruned after 30 days. | `focused/store.py` | Built |
 | **Restore** | After `/clear` and compaction, the `SessionStart` hook loads a summary of the session: decisions, open asks, files and PRs, and the latest messages with their answers, under 9,500 characters. The whole summary is kept in a file. | `focused/summary.py` | Built (0.4) |
 | **Idle stop** | After 59 minutes without a reply, in a session of 100,000 tokens or more, the first typed message is stopped once, since it would resend the whole session without the prompt cache. | `focused/idle.py` | Built (0.4) |
-| **Hosted index** | The hooks push the turns that changed to a Worker on the maintainer's Cloudflare account. Any later session reads them back and searches them, so the index outlives the container. | `focused/remote.py`; [focused-context-worker](https://github.com/nicolaszimmer/focused-context-worker) | Built (0.6; focused-context-worker merged), not yet deployed |
+| **Hosted index** | The hooks push the turns that changed to a Worker on the maintainer's Cloudflare account. Any later session reads them back and searches them, so the index outlives the container. | `focused/remote.py`; [focused-context-worker](https://github.com/nicolaszimmer/focused-context-worker) | Built (0.6); the Worker deployed on 2026-11-04 |
 | **Choosing a session** | In a session where nothing has been said yet, `/focused-context` offers three earlier sessions by title, with a field for any other: those of this session's repositories first, then those of related repositories, then the latest. Sessions are named by their titles everywhere. | `focused/cli.py`, `skills/context` | Built (0.6) |
-| **Recall** | What earlier sessions said that bears on what the person does now, found by meaning (Workers AI's bge-m3 embeddings of each message part, in Vectorize) and by words, each with what answered it. A short block joins a session's first typed message; `/focused-recall` gives more, and Claude may use it itself. Jev can sift the candidates, switched off for now. | `focused/recall.py`; the Worker's `src/recall.ts` | Built, in review |
-| **Repository graph** | How sessions relate. Each session links to the repositories it worked in, weighted by its transcript entries there (working directories, and the files and folders tools were given); repositories are related when one session worked in both. Recall and the choice of a session go to the same repositories first, then to related ones, among what is relevant. Repositories are named by their `origin`, the same in every container. | `focused/repos.py`; the Worker's `session_repos` | Built, in review |
+| **Recall** | What earlier sessions said that bears on what the person does now, found by meaning (Workers AI's bge-m3 embeddings of each message part, in Vectorize) and by words, each with what answered it. A short block joins a session's first typed message; `/focused-recall` gives more, and Claude may use it itself. Jev can sift the candidates, switched off for now. | `focused/recall.py`; the Worker's `src/recall.ts` | Built (0.8) |
+| **Repository graph** | How sessions relate. Each session links to the repositories it worked in, weighted by its transcript entries there (working directories, and the files and folders tools were given); repositories are related when one session worked in both. Recall and the choice of a session go to the same repositories first, then to related ones, among what is relevant. Repositories are named by their `origin`, the same in every container. | `focused/repos.py`; the Worker's `session_repos` | Built (0.8) |
 | **Ledger** | Three more Jev questions about Claude's paragraphs: does it ask the person to decide, does it report a checked result, does it commit Claude to doing something. Later messages are paired against those asks, the way answers are paired today, so an ask closes when it is settled. The ledger collects what is waiting on the person, the to-dos, the findings and the PRs across sessions. | to be built | Planned |
 | **View page** | A page served by the Worker that shows the ledger. A decision answered there is written to it. | to be built | Planned |
 | **Restore from the ledger** | The summary's decisions and open items come from the ledger, which spans every session and device, not one transcript. | to be built | Planned |
@@ -109,11 +109,12 @@ repository per working session. What was built differs:
 
 ## Build order
 
-1. **Hosted index and restore.** Built and merged: the client (0.6) and the Worker. Done when a cloud session on the iPhone and one on the Mac reach the same
-   sessions. That needs the Worker deployed and the environment set up (README, "The
-   hosted index").
-2. **Recall** (decided on 2026-11-03, before the ledger). Built and in review. Done when a new
-   session's first message brings what earlier sessions said about it.
+1. **Hosted index and restore.** Built (0.6), and the Worker deployed on 2026-11-04 with
+   the environment set up. Done when a cloud session on the iPhone and one on the Mac reach
+   the same sessions.
+2. **Recall** (decided on 2026-11-03, before the ledger). Built (0.8), with the repository
+   graph. Done when a new session's first message brings what earlier sessions said about
+   it.
 3. **Ledger and view page.** The three new Jev questions, then the page. Ledger items join
    recall.
 4. **Triage and steward sessions.** Done when working sessions get no PR wake-ups.
@@ -140,6 +141,14 @@ Made by the maintainer on 2026-11-03:
 - How the data relates is a graph: primarily the repositories a session uses, then
   repositories that were used together in one session before.
 
+Made by the maintainer on 2026-11-04:
+
+- `/focused-recall` keeps the permission pattern the other commands have: `focused.py`
+  with any arguments. Claude Code checks each part of a chained command on its own.
+- Recalled text quoted as JSON strings, under a header that says it is data, is enough of
+  a guard against what an earlier session's text may say.
+- The Worker runs on Workers Paid.
+
 Open:
 
 1. How the Worker is deployed: by hand with `wrangler`, or by a GitHub Actions workflow
@@ -152,5 +161,4 @@ Open:
    project should still matter anywhere (search, naming a session by title) is open.
 4. The idle stop's minimum, 100,000 tokens, and the summary's limit, 9,500 characters.
 5. Recall's similarity floors (0.6 for a first message, 0.4 on demand, guesses for
-   bge-m3), whether Jev sifts its candidates,
-   and Workers Free (about 4,900 parts) or Paid (about 9,700) for the vectors.
+   bge-m3), and whether Jev sifts its candidates.
