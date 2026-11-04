@@ -85,6 +85,15 @@ class InstallTest(unittest.TestCase):
             install.install(other, settings_path=self.settings, skills_dir=self.skills)
         self.assertEqual(len([c for c in self.commands("Stop") if install.MARK in c]), 1)
 
+    def test_jev_switches_findings_and_asks_on_for_every_hook_and_command(self):
+        self.run_install()
+        self.assertNotIn("FOCUSED_JEV_LEDGER", self.loaded()["env"])
+        self.run_install(jev=True)
+        self.assertEqual(self.loaded()["env"]["FOCUSED_JEV_LEDGER"], "1")  # env: hooks and commands alike
+        self.assertTrue(any(c.startswith("FOCUSED_JEV=1 ") for c in self.commands("Stop")))
+        install.uninstall(settings_path=self.settings, skills_dir=self.skills)
+        self.assertNotIn("env", self.loaded())
+
     def test_uninstall_removes_only_what_it_installed(self):
         theirs = {"type": "command", "command": "echo theirs"}
         self.settings.write_text(json.dumps({"env": {"KEEP": "1"}, "hooks": {"Stop": [{"hooks": [theirs]}]}}))

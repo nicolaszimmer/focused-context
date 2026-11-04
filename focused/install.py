@@ -18,6 +18,10 @@ which calls `install()`:
   the same name, so a repository's own copies are shadowed, not doubled.
 - **`FOCUSED_INSTALL=environment`** in the settings' `env`, so a repository's own focused
   hooks (rapid-review-bot's wrapper) stand down instead of running a second time.
+- With `jev=True`, **`FOCUSED_JEV_LEDGER=1`** in the settings' `env` too: findings and asks
+  (switched on by the maintainer on 2026-11-04). In `env`, it reaches every hook and the
+  commands, as the summary after /clear and /focused-context need it as much as the Stop
+  hook that asks Jev.
 - With `follow`, a branch of focused-context, a **SessionStart hook** at startup and resume
   that keeps the install at that branch (focused/update.py): the setup script runs once a
   week or so, and this runs in every session.
@@ -39,6 +43,7 @@ MARK = "# focused-install"
 SKILLS = ("answers", "find", "context", "recall")
 SKILL_MARK = ".focused-install"
 ENV_MARK = ("FOCUSED_INSTALL", "environment")
+LEDGER_ENV = ("FOCUSED_JEV_LEDGER", "1")
 # The checkout path goes into shell commands and skills between double quotes, so it may
 # hold only characters that mean nothing to the shell there: no $, `, \ or ", no spaces.
 SAFE_PATH = re.compile(r"[A-Za-z0-9_./+@%=:,-]+")
@@ -166,6 +171,8 @@ def install(root: Optional[Path] = None, jev: bool = False, settings_path: Optio
         hooks[event] = hooks.get(event, []) + groups
     settings["hooks"] = hooks
     settings["env"] = dict(settings.get("env") or {}, **{ENV_MARK[0]: ENV_MARK[1]})
+    if jev:
+        settings["env"][LEDGER_ENV[0]] = LEDGER_ENV[1]
     _write(settings_path, settings)
 
     for name, text in skills.items():
@@ -173,7 +180,7 @@ def install(root: Optional[Path] = None, jev: bool = False, settings_path: Optio
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "SKILL.md").write_text(text, encoding="utf-8")
         (folder / SKILL_MARK).write_text(str(root) + "\n", encoding="utf-8")
-    return [f"hooks in {settings_path}: Stop{' with Jev' if jev else ''}, SessionEnd, "
+    return [f"hooks in {settings_path}: Stop{' with Jev, findings and asks' if jev else ''}, SessionEnd, "
             "SessionStart (clear|compact), UserPromptSubmit"
             + (f", and SessionStart (startup|resume) following {follow}" if follow else ""),
             f"commands in {skills_dir}: " + ", ".join(f"/focused-{name}" for name in SKILLS),
@@ -193,8 +200,9 @@ def uninstall(settings_path: Optional[Path] = None, skills_dir: Optional[Path] =
         else:
             settings.pop("hooks", None)
         env = dict(settings.get("env") or {})
-        if env.get(ENV_MARK[0]) == ENV_MARK[1]:
-            env.pop(ENV_MARK[0])
+        for key, value in (ENV_MARK, LEDGER_ENV):
+            if env.get(key) == value:
+                env.pop(key)
         if env:
             settings["env"] = env
         else:

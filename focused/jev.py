@@ -1,8 +1,8 @@
 """Jev, the decision model focused asks about each turn.
 
 Two closed questions, both measured against the maintainer's labels on
-2026-11-03 (focused-context-lab, eval/), and a third, the ledger, not yet measured
-(below, off unless FOCUSED_JEV_LEDGER=1):
+2026-11-03 (focused-context-lab, eval/), and a third, the ledger, checked by eye on
+2026-11-04 but not measured (below, with FOCUSED_JEV_LEDGER=1):
 - what each part of a person's message does: four yes-or-no questions, since a
   part can be several kinds at once;
 - whether each paragraph Claude wrote in the turn, or in a wake-up filed under
@@ -224,8 +224,8 @@ def answer_requests(parts: list, n: int, paragraphs: list, wanted: set) -> list:
 
 # The ledger (focused/summary.py, "Findings" and "Asked of you"): what each paragraph Claude
 # wrote leaves for a later reader, whether or not it answers a part. Asked only with
-# FOCUSED_JEV_LEDGER=1 as well: built on 2026-11-04 at the maintainer's request, switched
-# on only once they have judged its output. Its words have their own LEDGER_WORDING, so
+# FOCUSED_JEV_LEDGER=1 as well: built on 2026-11-04 at the maintainer's request, and
+# switched on by them that day on its output. Its words have their own LEDGER_WORDING, so
 # changing them asks these questions again and nothing else.
 LEDGER_POLICY = (
     "state.message is a message a person sent to Claude, an AI coding assistant, during a working session. "
