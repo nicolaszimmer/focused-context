@@ -288,6 +288,30 @@ on what you're doing now (`focused/recall.py`, the Worker's `POST /v1/recall`):
   Worker's AI and Vectorize bindings it recalls by words alone, so nothing is added to a
   first message, and the command still answers.
 
+## Pull requests: steward sessions
+
+A session that watches its own pull request is woken by every CI result, review and bot
+comment, and each time re-reads its whole conversation, mostly to find nothing to do; a
+command typed meanwhile, such as `/focused-answers`, waits until that turn ends. So in a
+cloud session, right after Claude opens a pull request with the GitHub tools, a
+`PostToolUse` hook tells it to hand the pull request to a **steward session** instead:
+a fresh cloud session on a smaller model (Sonnet 5.5), started with the `create_session`
+tool and the arguments the hook gives (`focused/steward.py`). The steward:
+
+- subscribes to the pull request, and fixes what is the pull request's to fix (the CI it
+  breaks, conflicts, review findings that are real and in scope), pushing new commits to
+  its branch only, after the repository's own checks;
+- answers every review thread, and leaves open what it would decline, security findings
+  and larger asks;
+- never merges, approves or closes;
+- posts one comment, "Ready to merge" or "Waiting on you", with what merging does and the
+  decisions left open, and posts it again only when that changes.
+
+`/focused:steward <PR URL> [branch]` hands over a pull request that is already open. Locally,
+where sessions can't start cloud sessions, the hook does nothing. `FOCUSED_STEWARD=0`
+switches it off, and `FOCUSED_STEWARD_MODEL` picks another model. A pull request from a
+fork isn't handed over: the steward couldn't push to it.
+
 ## Storage
 
 - Claude Code already keeps every session as JSONL under
@@ -549,6 +573,10 @@ Made on 2026-11-04 by the maintainer:
   eye, without first measuring the questions against labels.
 - A last text with no words leaves the text before it as the turn's last text (the
   review thread on `_final`, #13).
+- A working session doesn't watch its pull requests: it hands each to a steward session
+  (a fresh cloud session) on Sonnet 5.5, so PR events don't wake it and commands typed
+  meanwhile, such as `/focused-answers`, don't wait behind them. Steward sessions first,
+  then Worker triage; the view page is built in parallel in its own session.
 
 Open:
 

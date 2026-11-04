@@ -1,6 +1,6 @@
 """focused: index Claude Code turns, list each question with its answer, search them.
 
-    focused hook stop|session-end|session-start|prompt   # as a hook: reads the hook's JSON on stdin
+    focused hook stop|session-end|session-start|prompt|pr-opened   # as a hook: reads its JSON on stdin
     focused index <transcript.jsonl>  # index one transcript
     focused index --all [--jev]       # index every transcript under ~/.claude/projects
     focused answers [-n N] [--session ID] [--events] [--full]
@@ -9,6 +9,7 @@
     focused install [--jev] [--follow BRANCH] [--uninstall]  # hooks and commands for a cloud environment
     focused update --follow BRANCH [--jev]    # bring that install to where the branch is now
     focused recall <words>                    # what earlier sessions said about it (needs the hosted index)
+    focused steward <PR URL> --head BRANCH    # a steward session's arguments for that pull request
 
 With FOCUSED_JEV=1 and an OpenRouter key, the Stop hook also asks Jev what each part
 of a message does and which paragraphs answer it (focused/jev.py); `answers` then lists
@@ -41,7 +42,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from . import idle, install, jev, recall, remote, repos, store, summary
+from . import idle, install, jev, recall, remote, repos, steward, store, summary
 from . import update as updater
 from .transcript import LISTED, is_own_command
 
@@ -459,7 +460,45 @@ def cmd_hook_prompt(args) -> int:
     return 0
 
 
+def cmd_hook_pr_opened(args) -> int:
+    """PostToolUse after mcp__github__create_pull_request, in cloud sessions: tells Claude to
+    hand the pull request to a steward session (focused/steward.py). Fails open: prints
+    nothing when there is nothing to hand over or anything goes wrong."""
+    try:
+        payload = json.load(sys.stdin)
+        if os.environ.get("CLAUDE_CODE_REMOTE") != "true" or not steward.enabled():
+            return 0
+        found = steward.from_hook(payload)
+        if found:
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse",
+                                                     "additionalContext": steward.handoff(found)}}))
+    except Exception:  # noqa: BLE001 - a hook must never fail the session
+        _log("hook pr-opened")
+    return 0
+
+
+def cmd_steward(args) -> int:
+    """The steward session's arguments for a pull request already open (skills/steward)."""
+    failed = 0 if args.in_session else 2  # a skill shows the problem instead of failing
+    found = steward.parse_url(args.url)
+    if not found:
+        print(f"focused: {args.url!r} isn't a pull request's URL (https://github.com/owner/name/pull/N).")
+        return failed
+    if not args.head:
+        print("focused: name the pull request's head branch with --head: read it from the pull request "
+              "(the GitHub tools give it as head.ref), then run this again.")
+        return failed
+    try:
+        print(steward.handoff(steward.arguments(*found, args.head)))
+    except ValueError as error:
+        print(f"focused: {error}.")
+        return failed
+    return 0
+
+
 def cmd_hook(args) -> int:
+    if args.event == "pr-opened":
+        return cmd_hook_pr_opened(args)
     if args.event == "session-start":
         return cmd_hook_session_start(args)
     if args.event == "prompt":
@@ -841,8 +880,9 @@ def main(argv=None) -> int:
     # Stop runs async after each turn; SessionEnd runs in the foreground on exit or /clear,
     # so a turn whose async run was cut off by the exit is still indexed. SessionStart loads
     # the summary after /clear and compaction; UserPromptSubmit ("prompt") stops one message
-    # after an hour without a reply.
-    hook.add_argument("event", choices=["stop", "session-end", "session-start", "prompt"])
+    # after an hour without a reply. PostToolUse after a pull request is opened ("pr-opened")
+    # hands it to a steward session, in cloud sessions.
+    hook.add_argument("event", choices=["stop", "session-end", "session-start", "prompt", "pr-opened"])
     hook.set_defaults(run=cmd_hook)
 
     index = sub.add_parser("index", help="index transcripts")
@@ -884,6 +924,11 @@ def main(argv=None) -> int:
     remember.add_argument("words", nargs="*")
     remember.add_argument("--limit", type=int, default=5, choices=range(1, 21), metavar="1-20")
     remember.set_defaults(run=cmd_recall)
+
+    hand = sub.add_parser("steward", help="the arguments of a steward session for a pull request")
+    hand.add_argument("url", help="the pull request, https://github.com/owner/name/pull/N")
+    hand.add_argument("--head", help="its head branch")
+    hand.set_defaults(run=cmd_steward)
 
     find = sub.add_parser("find", help="search prompts and answers")
     find.add_argument("words", nargs="*")
