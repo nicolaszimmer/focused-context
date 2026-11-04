@@ -443,7 +443,7 @@ class PluginTest(unittest.TestCase):
         market = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())
         hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text())["hooks"]
         self.assertEqual(market["plugins"][0]["name"], plugin["name"])
-        self.assertEqual(set(hooks), {"Stop", "SessionEnd", "SessionStart", "UserPromptSubmit"})
+        self.assertEqual(set(hooks), {"Stop", "SessionEnd", "SessionStart", "UserPromptSubmit", "PostToolUse"})
         self.assertEqual(hooks["SessionStart"][0]["matcher"], "clear|compact")
         prompt = hooks["UserPromptSubmit"][0]["hooks"][0]
         self.assertTrue(prompt["command"].endswith(" hook prompt"))

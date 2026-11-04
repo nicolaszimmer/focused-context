@@ -42,6 +42,18 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "mcp__github__create_pull_request",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/focused.py\" hook pr-opened",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }

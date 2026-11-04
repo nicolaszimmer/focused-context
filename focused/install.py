@@ -10,11 +10,12 @@ So the setup script fetches focused at a pinned commit and runs `scripts/install
 which calls `install()`:
 
 - **Hooks**, merged into `~/.claude/settings.json`: Stop (async: indexing, and Jev with
-  `jev=True`), SessionEnd, SessionStart after /clear and compaction, and UserPromptSubmit
+  `jev=True`), SessionEnd, SessionStart after /clear and compaction, UserPromptSubmit
   (the stop after an hour without a reply, and recall with a session's first message,
-  which Jev sifts with `jev=True`).
-- **Commands**, as personal skills `focused-answers`, `focused-find` and `focused-context`
-  in `~/.claude/skills`. A personal skill takes precedence over a repository's skill of
+  which Jev sifts with `jev=True`), and PostToolUse after a pull request is opened (hand it
+  to a steward session, focused/steward.py).
+- **Commands**, as personal skills `focused-answers`, `focused-find`, `focused-context`,
+  `focused-recall` and `focused-steward` in `~/.claude/skills`. A personal skill takes precedence over a repository's skill of
   the same name, so a repository's own copies are shadowed, not doubled.
 - **`FOCUSED_INSTALL=environment`** in the settings' `env`, so a repository's own focused
   hooks (rapid-review-bot's wrapper) stand down instead of running a second time.
@@ -40,7 +41,7 @@ from pathlib import Path
 from typing import Optional
 
 MARK = "# focused-install"
-SKILLS = ("answers", "find", "context", "recall")
+SKILLS = ("answers", "find", "context", "recall", "steward")
 SKILL_MARK = ".focused-install"
 ENV_MARK = ("FOCUSED_INSTALL", "environment")
 LEDGER_ENV = ("FOCUSED_JEV_LEDGER", "1")
@@ -73,6 +74,8 @@ def _hooks(root: Path, jev: bool, follow: Optional[str] = None) -> dict:
         "SessionEnd": [{"hooks": [command("session-end", timeout=15)]}],
         "SessionStart": [{"matcher": "clear|compact", "hooks": [command("session-start", timeout=30)]}],
         "UserPromptSubmit": [{"hooks": [command("prompt", timeout=15, prefix="FOCUSED_JEV=1 " if jev else "")]}],
+        # After a pull request is opened: hand it to a steward session (focused/steward.py).
+        "PostToolUse": [{"matcher": "mcp__github__create_pull_request", "hooks": [command("pr-opened", timeout=10)]}],
     }
     if follow:
         # In the background, so a slow network never holds up the start of a session.
@@ -194,7 +197,7 @@ def install(root: Optional[Path] = None, jev: bool = False, settings_path: Optio
         (folder / "SKILL.md").write_text(text, encoding="utf-8")
         (folder / SKILL_MARK).write_text(str(root) + "\n", encoding="utf-8")
     return [f"hooks in {settings_path}: Stop{' with Jev, findings and asks' if jev else ''}, SessionEnd, "
-            "SessionStart (clear|compact), UserPromptSubmit"
+            "SessionStart (clear|compact), UserPromptSubmit, PostToolUse (pull request opened)"
             + (f", and SessionStart (startup|resume) following {follow}" if follow else ""),
             f"commands in {skills_dir}: " + ", ".join(f"/focused-{name}" for name in SKILLS),
             f"from {root}"]

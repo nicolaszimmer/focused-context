@@ -53,7 +53,9 @@ planned
    ledger: decisions waiting on you · to-dos · findings · PRs, from more Jev questions
            (findings and asks in the summary: built in 0.9, switched on)
    view page served by the Worker: answer a decision there, and it reaches the ledger
-   GitHub ── webhook ──▶ Worker triage (rules) ── actionable ──▶ a fresh steward session
+   GitHub ── webhook ──▶ Worker triage (rules) ── actionable ──▶ the PR's steward session
+built in 0.10
+   a pull request opened ──▶ handed to a steward session on Sonnet 5.5, not watched here
 ```
 
 | Part | What it does | Where | State |
@@ -73,7 +75,8 @@ planned
 | **Ledger** | Later messages paired against the asks, the way answers are paired, so an ask closes when it is settled; a question for what Claude commits to doing. The ledger collects what is waiting on the person, the to-dos, the findings and the PRs across sessions. | to be built | Planned |
 | **View page** | A page served by the Worker that shows the ledger. A decision answered there is written to it. | to be built | Planned |
 | **Restore from the ledger** | The summary's decisions and open items come from the ledger, which spans every session and device, not one transcript. | to be built | Planned |
-| **Triage and steward sessions** | Working sessions stop subscribing to their PRs. GitHub sends webhooks to the Worker, plain rules drop what needs nothing, and each actionable event starts a fresh, small session through a scheduled task's API trigger, on the maintainer's plan. A PR counts as ready in the ledger only when CI is green and no finding is open. | to be built | Planned |
+| **Steward sessions** | Working sessions stop watching their PRs. Right after a PR is opened in a cloud session, a PostToolUse hook has Claude hand it to a steward: a fresh cloud session on Sonnet 5.5 that subscribes to it, fixes what is the PR's to fix, answers reviews, never merges, and says in one comment what waits on the maintainer. `/focused:steward` hands over a PR already open. | `focused/steward.py`, `skills/steward` | Built (0.10) |
+| **Triage** | GitHub sends webhooks to the Worker, plain rules drop what needs nothing (bot summary edits, echoes), and only actionable events wake the PR's steward. A PR counts as ready in the ledger only when CI is green and no finding is open. | to be built | Planned |
 
 ## Why the steward sessions
 
@@ -120,7 +123,10 @@ repository per working session. What was built differs:
 3. **Ledger and view page.** Findings and asks in the summary first (decided on
    2026-11-04, before an index of development documents): built (0.9) and switched on the
    same day. Then asks closing when settled, to-dos, and the page. Ledger items join recall.
-4. **Triage and steward sessions.** Done when working sessions get no PR wake-ups.
+4. **Steward sessions, then triage** (prioritised on 2026-11-04, ahead of the rest of the
+   ledger). Steward sessions built (0.10): done when working sessions get no PR wake-ups.
+   Then triage in the Worker, so stewards get only actionable events. The view page is
+   built in parallel, in its own session.
 
 ## Decisions
 
@@ -162,6 +168,10 @@ Made by the maintainer on 2026-11-04:
   documents and an MCP endpoint.
 - Findings and asks are switched on (`FOCUSED_JEV_LEDGER=1`) on their output, checked by
   eye, without first measuring the questions against labels.
+- A working session doesn't watch its pull requests: it hands each to a steward session
+  (a fresh cloud session) on Sonnet 5.5, so PR events don't wake it and commands typed
+  meanwhile, such as `/focused-answers`, don't wait behind them. Steward sessions first,
+  then Worker triage; the view page is built in parallel in its own session.
 
 Open:
 
