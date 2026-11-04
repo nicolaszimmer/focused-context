@@ -14,6 +14,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import isolate  # noqa: E402,F401  (before any test runs: none reaches a real service)
+
 from test_focused import Fixture, assistant, text, user  # noqa: E402
 from test_jev import FakeJev  # noqa: E402
 

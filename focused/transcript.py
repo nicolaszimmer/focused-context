@@ -90,17 +90,19 @@ def text_of(content) -> str:
 
 
 def provenance(entry: dict) -> str:
-    """'human', the recorded kind of a synthetic prompt, or 'unknown'."""
+    """'human', the recorded kind of a synthetic prompt, or 'unknown'. A compaction's
+    summary and a meta entry are synthetic whatever origin they record: Claude Code gives
+    a summary the origin of the turn that was compacted, "human" included."""
+    if entry.get("isCompactSummary"):
+        return "compact-summary"
+    if entry.get("isMeta"):
+        return "meta"
     origin = entry.get("origin") or {}
     kind = origin.get("kind") or entry.get("turnOrigin")
     if kind == HUMAN or entry.get("turnOrigin") == HUMAN:
         return HUMAN
     if kind:
         return str(kind)
-    if entry.get("isCompactSummary"):
-        return "compact-summary"
-    if entry.get("isMeta"):
-        return "meta"
     return UNKNOWN
 
 

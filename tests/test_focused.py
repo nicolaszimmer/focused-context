@@ -11,6 +11,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import isolate  # noqa: E402,F401  (before any test runs: none reaches a real service)
+
 from focused import cli, store
 from focused.transcript import parse
 
@@ -154,6 +157,25 @@ class StoreTest(Fixture):
         self.index()
         self.assertEqual(self.count(conn), 5)
         self.assertEqual(self.count(conn, "SELECT count(*) FROM turns_fts WHERE turns_fts MATCH 'hooks'"), 1)
+
+    def test_a_compaction_summary_is_never_a_persons_message(self):
+        # Claude Code gives a compaction's summary the origin of the turn it compacted.
+        summary = user("cs", "This session is being continued from a previous conversation.\n\n1. Primary Request",
+                       ts="2026-11-03T06:30:00.000Z", isCompactSummary=True, isVisibleInTranscriptOnly=True, **HUMAN)
+        self.write(SESSION + [summary, assistant(text("Picking up where we left off."))])
+        conn = self.index()
+        row = conn.execute("SELECT origin, parent_key FROM turns WHERE turn_key = 'cs'").fetchone()
+        self.assertEqual(tuple(row), ("compact-summary", "old"))
+        # An index that read it as a message (before 0.8.1) loses its parts on the next read.
+        conn.execute("INSERT INTO parts (session_id, turn_key, n, text) VALUES ('s1', 'cs', 1, 'This session')")
+        conn.execute("INSERT INTO pairs (session_id, turn_key, n, para_key, answers, partly, wording) "
+                     "VALUES ('s1', 'cs', 1, 'cs:0.1', 0.9, 0, 'w')")
+        conn.commit()
+        self.index()
+        self.assertEqual(self.count(conn, "SELECT count(*) FROM parts WHERE turn_key = 'cs'"), 0)
+        self.assertEqual(self.count(conn, "SELECT count(*) FROM pairs WHERE turn_key = 'cs'"), 0)
+        # Its reply is filed under the message it followed.
+        self.assertEqual(conn.execute("SELECT turn_key FROM paras WHERE source_key = 'cs'").fetchone()[0], "old")
 
     def test_stop_hook_answer_wins_over_a_lagging_transcript(self):
         conn = self.index(stop_message="The final words.")
