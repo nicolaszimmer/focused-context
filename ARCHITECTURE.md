@@ -145,8 +145,9 @@ Made by the maintainer on 2026-11-04:
 
 - `/focused-recall` keeps the permission pattern the other commands have: `focused.py`
   with any arguments. Claude Code checks each part of a chained command on its own.
-- Recalled text quoted as JSON strings, under a header that says it is data, is enough of
-  a guard against what an earlier session's text may say.
+- Quoting recalled text as JSON strings, under a header that says it is data, is enough.
+  The quoting keeps recalled text from passing for the block's own lines; it doesn't stop
+  Claude from reading an instruction in it, which the header tells it not to follow.
 - The Worker runs on Workers Paid.
 
 Open:

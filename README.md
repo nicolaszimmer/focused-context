@@ -474,8 +474,9 @@ Made on 2026-11-04 by the maintainer:
 
 - `/focused-recall` keeps the permission pattern the other commands have: `focused.py`
   with any arguments.
-- Recalled text quoted as JSON strings, under a header that says it is data, is enough of
-  a guard against what an earlier session's text may say.
+- Quoting recalled text as JSON strings, under a header that says it is data, is enough.
+  The quoting keeps recalled text from passing for the block's own lines; it doesn't stop
+  Claude from reading an instruction in it, which the header tells it not to follow.
 - The hosted index runs on Workers Paid.
 
 Open:
