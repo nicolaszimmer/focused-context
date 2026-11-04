@@ -41,7 +41,7 @@ class StewardTest(unittest.TestCase):
         context = json.loads(out)["hookSpecificOutput"]
         self.assertEqual(context["hookEventName"], "PostToolUse")
         text = context["additionalContext"]
-        self.assertIn("don't call subscribe_pr_activity", text)
+        self.assertLess(text.index("First call unsubscribe_pr_activity"), text.index("Then call the create_session"))
         arguments = json.loads(text[text.index("{"):])
         self.assertEqual(arguments["model"], "claude-sonnet-5-5")
         self.assertEqual((arguments["source_url"], arguments["source_revision"], arguments["outcome_branch"]),

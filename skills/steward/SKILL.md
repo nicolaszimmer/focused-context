@@ -21,6 +21,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/focused.py" --in-session "${CLAUDE_SESSIO
 
 Go on only if the output contains a JSON object with `source_url` and `prompt`: those are
 the arguments. For any other output (a problem the command names, a traceback, anything
-else), show it to the user and stop. Otherwise call the create_session tool with exactly
-those arguments, unsubscribe this session from the pull request if it is subscribed, and tell
-the user in one line that a steward session drives it, on which model. Run nothing else.
+else), show it to the user and stop. Otherwise first call unsubscribe_pr_activity for the
+pull request (a pull request's events go to one session only), then call the create_session
+tool with exactly those arguments, and tell the user in one line that a steward session drives
+it, on which model. Run nothing else.
