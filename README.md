@@ -288,6 +288,37 @@ on what you're doing now (`focused/recall.py`, the Worker's `POST /v1/recall`):
   Worker's AI and Vectorize bindings it recalls by words alone, so nothing is added to a
   first message, and the command still answers.
 
+## Development documents
+
+A session that needs a page of the docs, or a section of a plan, reads the whole document,
+and so does every subagent it hands the work to. With the hosted index set up, focused
+indexes development documents by section (`focused/docs.py`, the Worker's `/v1/docs`), so a
+session reads the sections that bear on its work:
+
+- **`/focused:docs <what>`** (`focused docs <words>`) lists the matching sections, best
+  first: each with its id, repository, path and heading path, its size and the start of its
+  text. Found by meaning (bge-m3, in a Vectorize index of their own) and by words, merged by
+  rank, as recall's are; by meaning from a similarity of 0.45.
+- **`/focused:docs read <id>`** (`focused docs read <id>`) prints one section in full, with
+  the ids of the sections before and after it.
+- **Claude may use it itself**, before reading a whole document, and give a subagent the
+  section ids instead of the document.
+- **Quoted as recall is:** each heading and text a JSON string, under a header that says it is
+  data, not a request.
+- **The Worker splits each document** at its `#` headings, outside fenced code: a section
+  runs to the next heading. An MDX page's front matter gives its title, which heads every
+  heading path. Each section keeps its repository, path, heading path and the commit it was
+  read at, and is embedded again only when its text changes.
+- **What is indexed first** (decided by the maintainer on 2026-11-04): rapid-review-docs'
+  pages, rapid-review-web's `dev/plan.md`, and this repository's README.md and ARCHITECTURE.md.
+- **Loading them:** how documents reach the index for good (a GitHub webhook to the Worker, a
+  GitHub Action in each repository, or by hand) is still open. Until it is decided, run
+  `focused docs push <files or folders>` in a checkout: it names the repository by its
+  `origin`, the commit by `HEAD`, sends the Markdown and MDX files that changed since the last
+  push, and with `--prune` deletes those the paths given no longer name.
+- **Nothing joins a session's first message** yet, as recall's block does: whether it should
+  is open.
+
 ## Pull requests: steward sessions
 
 A session that watches its own pull request is woken by every CI result, review and bot
@@ -384,7 +415,8 @@ It brings:
     the transcript, and fails open.
 
   None of them fails a turn: errors go to `~/.claude/focused/errors.log`.
-- **Three commands.** `/focused:context [--full]` shows the summary loaded after
+- **Commands.** `/focused:docs <what>` finds the sections of development documents that bear
+  on it (see "Development documents"). `/focused:context [--full]` shows the summary loaded after
   `/clear` (see "After /clear and compaction"). `/focused:answers [-n N] [--events] [--full]` lists this
   session's messages with their answers; `/focused:find <words>` searches every
   message and reply in this project, wake-ups included. Each reindexes the session first, and
@@ -452,7 +484,7 @@ sh "$D/scripts/install-cloud.sh" --jev --follow main
 - merges the four hooks into `~/.claude/settings.json`: `Stop` (async), `SessionEnd`,
   `SessionStart` after `/clear` and compaction, and `UserPromptSubmit`. Other hooks and
   settings stay as they are, and running it again replaces what it installed.
-- writes `/focused-answers`, `/focused-find`, `/focused-context` and `/focused-recall` as personal skills
+- writes `/focused-answers`, `/focused-find`, `/focused-context`, `/focused-recall` and `/focused-docs` as personal skills
   in `~/.claude/skills`. A personal skill takes precedence over a repository's skill of
   the same name, so a repository's own copies are shadowed, not doubled.
 - sets `FOCUSED_INSTALL=environment` in the settings' `env`, so a repository's own
@@ -590,3 +622,9 @@ Open:
    the hosted index's search spans all of them. Recall and the choice of a session now go
    by repository, which may settle this: whether the project should still matter
    anywhere (search, naming a session by its title) is open.
+5. How development documents reach the index for good: (a) a GitHub push webhook to the
+   Worker, which fetches the changed files (a webhook secret and a GitHub token in the
+   Worker); (b) a GitHub Action in each document's repository running `focused docs push`
+   (the Worker's token as a secret there); (c) `focused docs push` by hand. Until then, by hand.
+6. Whether matching document sections should join a session's first message, as recall's
+   block does. Off until decided.

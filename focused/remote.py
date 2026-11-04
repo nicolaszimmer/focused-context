@@ -308,3 +308,63 @@ def search(words: list, project: Optional[str], limit: int = 10, timeout: float 
         query["project"] = project
     found = _object(_call("GET", f"/v1/search?{urllib.parse.urlencode(query)}", timeout=timeout), "search results")
     return {"turns": _rows(found.get("turns"), "messages"), "paras": _rows(found.get("paras"), "paragraphs")}
+
+
+# ---- development documents (focused/docs.py) ----
+
+def docs_held(repo: str, timeout: float = 15.0) -> list:
+    """The documents the hosted index holds of a repository: path, commit, digest, sections."""
+    found = _object(_call("GET", "/v1/docs?" + urllib.parse.urlencode({"repo": repo}), timeout=timeout), "a list of documents")
+    return _rows(found.get("documents"), "documents")
+
+
+def docs_push(repo: str, commit: str, files: list, gone: list, timeout: float = 30.0) -> dict:
+    """Replace the sections of these documents (each {"path", "text"}) and delete those of
+    the paths in `gone` (PUT /v1/docs): counts of sections, unchanged and embedded."""
+    body = {"repo": repo, "commit": commit, "files": files, "gone": gone}
+    return _object(_call("PUT", "/v1/docs", _encoded(body), timeout=timeout), "a push's result")
+
+
+def docs_search(text: str, repos: Optional[list] = None, limit: int = 8, min_similarity: Optional[float] = None,
+                timeout: float = 15.0) -> dict:
+    """Sections of development documents that bear on `text`, best first (POST /v1/docs/search):
+    each with its `id`, `repo`, `path`, `heading` path, `commit`, `chars`, the `start` of its
+    text, `similarity` and `via`; and `vectors`, whether the Worker searched by meaning."""
+    body = {"text": text[:20_000], "repos": list(repos or [])[:repo_names.LISTED], "limit": limit,
+            "min_similarity": min_similarity}
+    found = _object(_call("POST", "/v1/docs/search", _encoded(body), timeout=timeout), "document search results")
+    items = _rows(found.get("items"), "sections")
+    for item in items:
+        _check_section(item, "start")
+    return {"items": items, "vectors": bool(found.get("vectors"))}
+
+
+def docs_read(section_id: str, timeout: float = 15.0) -> Optional[dict]:
+    """One section in full (GET /v1/docs/sections/:id), or None if the Worker has none by that id."""
+    try:
+        found = _call("GET", "/v1/docs/sections/" + urllib.parse.quote(section_id, safe=""), timeout=timeout)
+    except RemoteError as error:
+        if error.status == 404:
+            return None
+        raise
+    return _check_section(_object(found, "a section"), "text")
+
+
+SECTION_ID = re.compile(r"[0-9a-f]{16}")
+COMMIT = re.compile(r"[0-9a-f]{7,64}")
+
+
+def _check_section(item: dict, text: str) -> dict:
+    """A section as the Worker sends it, or RemoteError: its id, repository and commit go into
+    focused's own lines, so each must be what it says it is; its heading and text are quoted."""
+    heading = item.get("heading")
+    if not (isinstance(item.get("id"), str) and SECTION_ID.fullmatch(item["id"])
+            and isinstance(item.get("repo"), str) and repo_names.NAME.fullmatch(item["repo"])
+            and isinstance(item.get("commit"), str) and COMMIT.fullmatch(item["commit"])
+            and isinstance(item.get("path"), str) and isinstance(item.get(text), str)
+            and isinstance(heading, list) and all(isinstance(h, str) for h in heading)):
+        raise RemoteError("the Worker sent a section without its id, repository, commit, path, heading or text")
+    for name in ("previous", "next"):
+        if item.get(name) is not None and not (isinstance(item[name], str) and SECTION_ID.fullmatch(item[name])):
+            item[name] = None
+    return item

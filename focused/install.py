@@ -15,7 +15,7 @@ which calls `install()`:
   which Jev sifts with `jev=True`), and PostToolUse after a pull request is opened (hand it
   to a steward session, focused/steward.py).
 - **Commands**, as personal skills `focused-answers`, `focused-find`, `focused-context`,
-  `focused-recall` and `focused-steward` in `~/.claude/skills`. A personal skill takes precedence over a repository's skill of
+  `focused-recall`, `focused-steward` and `focused-docs` in `~/.claude/skills`. A personal skill takes precedence over a repository's skill of
   the same name, so a repository's own copies are shadowed, not doubled.
 - **`FOCUSED_INSTALL=environment`** in the settings' `env`, so a repository's own focused
   hooks (rapid-review-bot's wrapper) stand down instead of running a second time.
@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Optional
 
 MARK = "# focused-install"
-SKILLS = ("answers", "find", "context", "recall", "steward")
+SKILLS = ("answers", "find", "context", "recall", "steward", "docs")
 SKILL_MARK = ".focused-install"
 ENV_MARK = ("FOCUSED_INSTALL", "environment")
 LEDGER_ENV = ("FOCUSED_JEV_LEDGER", "1")

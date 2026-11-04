@@ -2,6 +2,7 @@
 (focused-context-worker) that keeps rows the way the Worker does: a push replaces the
 rows of the turns it carries and deletes those it names gone."""
 
+import hashlib
 import io
 import json
 import os
@@ -40,6 +41,11 @@ class FakeWorker:
         self.raw: list = []  # (body, declared length) to answer the next requests with, as they are
         self.recall_items: list = []  # what POST /v1/recall answers
         self.recalls: list = []  # the bodies it was sent
+        self.docs: dict = {}  # (repo, path) -> {"commit", "digest", "text"}: what PUT /v1/docs took
+        self.doc_pushes: list = []  # the bodies of PUT /v1/docs
+        self.doc_items: list = []  # what POST /v1/docs/search answers
+        self.doc_searches: list = []  # the bodies it was sent
+        self.doc_sections: dict = {}  # id -> what GET /v1/docs/sections/:id answers
         worker = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -91,6 +97,27 @@ class FakeWorker:
                 if url.path == "/v1/recall" and method == "POST":
                     worker.recalls.append(json.loads(body))
                     return self.reply(200, {"items": worker.recall_items, "vectors": True})
+                if url.path == "/v1/docs" and method == "PUT":
+                    pushed = json.loads(body)
+                    worker.doc_pushes.append(pushed)
+                    for path in pushed["gone"]:
+                        worker.docs.pop((pushed["repo"], path), None)
+                    for f in pushed["files"]:
+                        worker.docs[(pushed["repo"], f["path"])] = {
+                            "commit": pushed["commit"], "digest": hashlib.sha256(f["text"].encode()).hexdigest()}
+                    return self.reply(200, {"files": len(pushed["files"]), "gone": len(pushed["gone"]),
+                                            "sections": 2 * len(pushed["files"]), "unchanged": 0,
+                                            "embedded": 2 * len(pushed["files"])})
+                if url.path == "/v1/docs" and method == "GET":
+                    return self.reply(200, {"documents": [
+                        {"repo": repo, "path": path, **held} for (repo, path), held in sorted(worker.docs.items())
+                        if query.get("repo") in (None, repo)]})
+                if url.path == "/v1/docs/search" and method == "POST":
+                    worker.doc_searches.append(json.loads(body))
+                    return self.reply(200, {"items": worker.doc_items, "vectors": True})
+                if url.path.startswith("/v1/docs/sections/"):
+                    found = worker.doc_sections.get(url.path.rsplit("/", 1)[1])
+                    return self.reply(200, found) if found else self.reply(404, {"error": "no such section"})
                 if url.path.startswith("/v1/sessions/"):
                     session = urllib.parse.unquote(url.path.rsplit("/", 1)[1])
                     if method == "PUT":
