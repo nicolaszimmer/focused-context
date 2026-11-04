@@ -149,6 +149,7 @@ WHERE turns.prompt IS NOT excluded.prompt
    OR turns.pull_requests IS NOT excluded.pull_requests
    OR turns.seq IS NOT excluded.seq
    OR turns.parent_key IS NOT excluded.parent_key
+   OR turns.origin IS NOT excluded.origin
 """
 
 

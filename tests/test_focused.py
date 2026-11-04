@@ -177,6 +177,17 @@ class StoreTest(Fixture):
         # Its reply is filed under the message it followed.
         self.assertEqual(conn.execute("SELECT turn_key FROM paras WHERE source_key = 'cs'").fetchone()[0], "old")
 
+    def test_a_turn_read_differently_is_rewritten_even_when_nothing_else_changed(self):
+        # A summary that opens a transcript has no message before it, so only its origin
+        # changes when it is read again under 0.8.1's rule.
+        self.write([user("cs", "This session is being continued from a previous conversation.",
+                         isCompactSummary=True, **HUMAN), assistant(text("Picking up."))])
+        conn = self.index()
+        conn.execute("UPDATE turns SET origin = 'human' WHERE turn_key = 'cs'")  # as an older reading stored it
+        conn.commit()
+        self.index()
+        self.assertEqual(conn.execute("SELECT origin FROM turns WHERE turn_key = 'cs'").fetchone()[0], "compact-summary")
+
     def test_stop_hook_answer_wins_over_a_lagging_transcript(self):
         conn = self.index(stop_message="The final words.")
         self.index()
