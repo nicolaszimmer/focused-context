@@ -87,6 +87,14 @@ def _ours(hook) -> bool:
     return isinstance(hook, dict) and MARK in str(hook.get("command", ""))
 
 
+def _installed_with_jev(settings: dict) -> bool:
+    """Whether the Stop hook install put in place asks Jev: only such an install sets
+    FOCUSED_JEV_LEDGER, so only it takes the switch away again."""
+    return any(_ours(hook) and str(hook.get("command", "")).startswith("FOCUSED_JEV=1 ")
+               for group in (settings.get("hooks") or {}).get("Stop", []) if isinstance(group, dict)
+               for hook in (group.get("hooks") or []))
+
+
 def _without_ours(hooks: dict) -> dict:
     """The hooks settings with every hook focused installed taken out, and any group or
     event left empty by that removed."""
@@ -166,6 +174,7 @@ def install(root: Optional[Path] = None, jev: bool = False, settings_path: Optio
             raise ValueError(f"{folder} exists and isn't focused's, so nothing was installed")
     skills = {name: _skill(root, name) for name in SKILLS}
 
+    had_jev = _installed_with_jev(settings)
     hooks = _without_ours(settings.get("hooks") or {})
     for event, groups in _hooks(root, jev, follow).items():
         hooks[event] = hooks.get(event, []) + groups
@@ -175,6 +184,8 @@ def install(root: Optional[Path] = None, jev: bool = False, settings_path: Optio
         # Only where it isn't set: a person's FOCUSED_JEV_LEDGER=0 survives the reinstall
         # that each update with --follow runs.
         settings["env"].setdefault(LEDGER_ENV[0], LEDGER_ENV[1])
+    elif had_jev and settings["env"].get(LEDGER_ENV[0]) == LEDGER_ENV[1]:
+        settings["env"].pop(LEDGER_ENV[0])  # reinstalled without Jev: the switch it set goes too
     _write(settings_path, settings)
 
     for name, text in skills.items():
@@ -196,10 +207,7 @@ def uninstall(settings_path: Optional[Path] = None, skills_dir: Optional[Path] =
     done = []
     if settings_path.exists():
         settings = _read(settings_path)
-        # FOCUSED_JEV_LEDGER is install's to remove only where it installed Jev's hooks.
-        with_jev = any(_ours(hook) and str(hook.get("command", "")).startswith("FOCUSED_JEV=1 ")
-                       for group in (settings.get("hooks") or {}).get("Stop", []) if isinstance(group, dict)
-                       for hook in (group.get("hooks") or []))
+        with_jev = _installed_with_jev(settings)
         hooks = _without_ours(settings.get("hooks") or {})
         if hooks:
             settings["hooks"] = hooks

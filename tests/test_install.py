@@ -103,6 +103,13 @@ class InstallTest(unittest.TestCase):
         install.uninstall(settings_path=self.settings, skills_dir=self.skills)
         self.assertEqual(self.loaded()["env"], {"FOCUSED_JEV_LEDGER": "1"})
 
+    def test_reinstalling_without_jev_takes_the_switch_jev_set(self):
+        self.run_install(jev=True)
+        self.run_install()
+        self.assertNotIn("FOCUSED_JEV_LEDGER", self.loaded()["env"])
+        install.uninstall(settings_path=self.settings, skills_dir=self.skills)
+        self.assertNotIn("env", self.loaded())
+
     def test_uninstall_removes_only_what_it_installed(self):
         theirs = {"type": "command", "command": "echo theirs"}
         self.settings.write_text(json.dumps({"env": {"KEEP": "1"}, "hooks": {"Stop": [{"hooks": [theirs]}]}}))
