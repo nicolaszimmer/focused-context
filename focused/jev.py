@@ -261,8 +261,15 @@ LEDGER_WORDED = (MODEL, LEDGER_POLICY, LEDGER, LEDGER_QUESTION, LEDGER_TRUE, LED
 LEDGER_WORDING = hashlib.sha256(json.dumps(LEDGER_WORDED).encode()).hexdigest()[:12]
 
 
+def ledger_shown() -> bool:
+    """Whether summaries show findings and asks: FOCUSED_JEV_LEDGER=1. Switched off, a
+    summary shows none, even of a session whose paragraphs Jev has read."""
+    return os.environ.get("FOCUSED_JEV_LEDGER") == "1"
+
+
 def ledger_enabled() -> bool:
-    return os.environ.get("FOCUSED_JEV_LEDGER") == "1" and enabled()
+    """Whether Jev is asked the ledger's questions: the ledger switched on, and Jev too."""
+    return ledger_shown() and enabled()
 
 
 def ledger_requests(parts: list, paragraphs: list, wanted: set) -> list:
@@ -305,6 +312,7 @@ def ledger_requests(parts: list, paragraphs: list, wanted: set) -> list:
 
 
 def read_ledger(answers: dict, pid: str) -> dict:
+    """{mark: P(yes)} for the paragraph asked about as `pid`."""
     return {mark: float(answers[f"{mark}_{pid}"]["noul"]) for mark in LEDGER}
 
 

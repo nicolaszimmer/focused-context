@@ -483,6 +483,8 @@ def _final(rows: list, key=lambda row: row[0], source=lambda row: row[-1]) -> li
 
 
 def _ask_ledger(conn: sqlite3.Connection, session_id: str, turn_key: str, call, done: dict) -> None:
+    """Ask the ledger's questions about the paragraphs of a turn's last texts that Jev
+    hasn't read in the current wording, and keep the answers."""
     texts = [row[0] for row in conn.execute("SELECT text FROM parts WHERE session_id = ? AND turn_key = ? ORDER BY n",
                                             (session_id, turn_key))]
     paras = [(row[0], row[1], row[2]) for row in _final(conn.execute(

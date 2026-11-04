@@ -329,6 +329,7 @@ class LedgerTest(Fixture):
     def setUp(self):
         super().setUp()
         self.write(LEDGER_SESSION)
+        os.environ["FOCUSED_JEV_LEDGER"] = "1"  # shown; asked only where a test passes ledger=True
 
     def asked(self, conn):
         return [row[0] for row in conn.execute("SELECT p.text FROM marks m JOIN paras p USING (session_id, para_key) ORDER BY p.seq")]
@@ -366,6 +367,28 @@ class LedgerTest(Fixture):
             self.assertLess(text.index("## Decisions") if "## Decisions" in text else 0, text.index("## Findings"))
             self.assertLess(text.index("## Findings"), text.index("## Asked of you"))
             self.assertLess(text.index("## Asked of you"), text.index("## Messages"))
+
+    def test_switched_off_no_summary_shows_them_even_once_read(self):
+        conn = self.index()
+        store.ask_jev(conn, "s1", ask=FakeJev(), ledger=True)
+        os.environ["FOCUSED_JEV_LEDGER"] = ""
+        for text in summary.build(conn, "s1"):
+            self.assertNotIn("## Findings", text)
+            self.assertNotIn("## Asked of you", text)
+        self.assertGreater(len(store.ledger(conn, "s1")), 0)  # kept, for when it is switched on
+
+    def test_only_a_word_for_word_repeat_replaces_an_earlier_entry(self):
+        self.write([user("u1", "Report.", **HUMAN),
+                    assistant(text("I found that the cache is rebuilt on every read in module A.\n\n"
+                                   "I found that the cache is rebuilt on every read in module B.\n\n"
+                                   "1. **I found** that the cache is rebuilt on every read in module B.\n\n"
+                                   "That is all."))])
+        conn = self.index()
+        store.ask_jev(conn, "s1", ask=FakeJev(), ledger=True)
+        findings = summary.build(conn, "s1")[1].split("## Findings", 1)[1].split("## Messages", 1)[0]
+        self.assertIn("module A", findings)
+        self.assertEqual(findings.count("module B"), 1)  # its list number and markup aside, the same words
+        self.assertIn("**I found** that the cache is rebuilt on every read in module B.", findings)  # the later
 
     def test_the_loaded_summary_keeps_the_newest_and_counts_the_rest(self):
         entries = [user("u1", "Report.", **HUMAN),

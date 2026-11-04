@@ -2,8 +2,8 @@
 
 Built from the index: each of your messages, split into parts and tagged by
 Jev, with the paragraphs Jev found answer them; the decisions you made; what is
-still open; and the files, commits and pull requests. Where Jev has read the
-ledger (FOCUSED_JEV_LEDGER=1), also what Claude found and what it asked of you,
+still open; and the files, commits and pull requests. With the ledger
+switched on (FOCUSED_JEV_LEDGER=1), also what Claude found and what it asked of you,
 answer or not: a report's findings rarely answer the message that asked for it. Tool output, narration and
 wake-up chatter are left out. A turn Jev hasn't read shows your message and
 Claude's last text instead.
@@ -36,7 +36,6 @@ LEDGER_SHARES = (("facts", 0.10), ("decisions", 0.25), ("findings", 0.30), ("ask
 # often comes after its first sentences (the Kahnemann report's, at character 670 of 1,016).
 FINDING_WIDTH = 800
 ASK_WIDTH = 300
-SAME = 0.8  # a finding or ask sharing this much of its words with a later one repeats it
 NUMBERED = re.compile(r"^\s*(?:" + TOP_ITEM.pattern.lstrip("^") + r")")
 
 
@@ -121,7 +120,8 @@ def build(conn, session_id: str, full_path: Optional[str] = None, cap: Optional[
                 still_open.append(f"- {_time(row['started_at'])} ({number}): {_short(part['text'], 220)}")
     facts = _facts(rows)
     short_facts = _facts(rows, recent=12)
-    marked = _ledger(conn, session_id, {row["turn_key"]: number for number, row in numbered})
+    marked = (_ledger(conn, session_id, {row["turn_key"]: number for number, row in numbered})
+              if jev.ledger_shown() else {"finding": [], "ask": []})
 
     span = f"{_time(listed[0]['started_at'])}–{_time(listed[-1]['started_at'])} UTC"
     head = (f"# Where we left off\n\nSummary of {store.session_name(conn, session_id)} by focused: {len(listed)} message{'' if len(listed) == 1 else 's'}, "
@@ -207,20 +207,23 @@ def _ledger(conn, session_id: str, numbers: dict) -> dict:
     return {mark: _latest(entries) for mark, entries in marked.items()}
 
 
-def _words(text: str) -> set:
-    return set(re.findall(r"\w+", text.lower()))
+def _words(text: str) -> tuple:
+    """A paragraph's words in order, without its list number, markup or case."""
+    return tuple(re.findall(r"\w+", NUMBERED.sub("", text, count=1).lower()))
 
 
 def _latest(entries: list) -> list:
-    """Without an entry that a later one repeats: a report often restates what is still
-    open. Repeats share at least SAME of their words; the later one is kept."""
+    """Without an entry that a later one repeats word for word: a report often restates
+    what is still open. Only the same words in the same order count, so two findings that
+    differ in one word (module A, module B) are both kept; the later repeat is kept."""
+    later: set = set()
     kept = []
-    for i, entry in enumerate(entries):
+    for entry in reversed(entries):
         words = _words(entry[3])
-        if not any(len(words & later) >= SAME * len(words | later)
-                   for later in (_words(other[3]) for other in entries[i + 1:])):
+        if words not in later:
             kept.append(entry)
-    return kept
+            later.add(words)
+    return kept[::-1]
 
 
 def _lines(entries: list, width: int) -> list:

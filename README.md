@@ -136,8 +136,8 @@ With `FOCUSED_JEV_LEDGER=1` as well as Jev, Jev also reads the last text Claude 
 each turn and each wake-up, and asks three yes-or-no questions about each paragraph:
 does it report a finding, does it ask you for a choice or for something only you can do,
 does it report progress (tests, CI, commits, pull requests, what a reviewer said). The
-summary then has two more sections, each newest last, a later repeat replacing an
-earlier one:
+summary then has two more sections, each newest last, a later repeat of the same words
+replacing an earlier one:
 
 - **Findings:** paragraphs Jev reads as a finding and not as progress, up to 800
   characters each in the summary loaded.
@@ -161,7 +161,8 @@ text, and no turn had a short last text after a long earlier one.
 **Cost:** three questions a paragraph of a last text. On that whole session, about 120
 requests and 0.8 million tokens, a third of what Jev's answer questions take on it.
 
-The hosted index keeps Jev's readings from focused-context-worker's `0003_marks`; a
+Switched off, no summary shows findings or asks, even of a session Jev read with it
+on. The hosted index keeps Jev's readings from focused-context-worker's `0003_marks`; a
 Worker without it ignores them, and a session read back from it has no findings or asks.
 
 ## After an hour without a reply
