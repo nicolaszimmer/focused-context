@@ -85,6 +85,31 @@ class InstallTest(unittest.TestCase):
             install.install(other, settings_path=self.settings, skills_dir=self.skills)
         self.assertEqual(len([c for c in self.commands("Stop") if install.MARK in c]), 1)
 
+    def test_jev_switches_findings_and_asks_on_for_every_hook_and_command(self):
+        self.run_install()
+        self.assertNotIn("FOCUSED_JEV_LEDGER", self.loaded()["env"])
+        self.run_install(jev=True)
+        self.assertEqual(self.loaded()["env"]["FOCUSED_JEV_LEDGER"], "1")  # env: hooks and commands alike
+        self.assertTrue(any(c.startswith("FOCUSED_JEV=1 ") for c in self.commands("Stop")))
+        install.uninstall(settings_path=self.settings, skills_dir=self.skills)
+        self.assertNotIn("env", self.loaded())
+
+    def test_a_ledger_setting_install_did_not_make_is_kept(self):
+        self.settings.write_text(json.dumps({"env": {"FOCUSED_JEV_LEDGER": "0"}}))
+        self.run_install(jev=True)  # as each update with --follow does
+        self.assertEqual(self.loaded()["env"]["FOCUSED_JEV_LEDGER"], "0")  # switched off stays off
+        self.settings.write_text(json.dumps({"env": {"FOCUSED_JEV_LEDGER": "1"}}))
+        self.run_install()  # without Jev: not install's to remove
+        install.uninstall(settings_path=self.settings, skills_dir=self.skills)
+        self.assertEqual(self.loaded()["env"], {"FOCUSED_JEV_LEDGER": "1"})
+
+    def test_reinstalling_without_jev_takes_the_switch_jev_set(self):
+        self.run_install(jev=True)
+        self.run_install()
+        self.assertNotIn("FOCUSED_JEV_LEDGER", self.loaded()["env"])
+        install.uninstall(settings_path=self.settings, skills_dir=self.skills)
+        self.assertNotIn("env", self.loaded())
+
     def test_uninstall_removes_only_what_it_installed(self):
         theirs = {"type": "command", "command": "echo theirs"}
         self.settings.write_text(json.dumps({"env": {"KEEP": "1"}, "hooks": {"Stop": [{"hooks": [theirs]}]}}))

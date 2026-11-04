@@ -18,6 +18,10 @@ which calls `install()`:
   the same name, so a repository's own copies are shadowed, not doubled.
 - **`FOCUSED_INSTALL=environment`** in the settings' `env`, so a repository's own focused
   hooks (rapid-review-bot's wrapper) stand down instead of running a second time.
+- With `jev=True`, **`FOCUSED_JEV_LEDGER=1`** in the settings' `env` too: findings and asks
+  (switched on by the maintainer on 2026-11-04). In `env`, it reaches every hook and the
+  commands, as the summary after /clear and /focused-context need it as much as the Stop
+  hook that asks Jev.
 - With `follow`, a branch of focused-context, a **SessionStart hook** at startup and resume
   that keeps the install at that branch (focused/update.py): the setup script runs once a
   week or so, and this runs in every session.
@@ -39,6 +43,7 @@ MARK = "# focused-install"
 SKILLS = ("answers", "find", "context", "recall")
 SKILL_MARK = ".focused-install"
 ENV_MARK = ("FOCUSED_INSTALL", "environment")
+LEDGER_ENV = ("FOCUSED_JEV_LEDGER", "1")
 # The checkout path goes into shell commands and skills between double quotes, so it may
 # hold only characters that mean nothing to the shell there: no $, `, \ or ", no spaces.
 SAFE_PATH = re.compile(r"[A-Za-z0-9_./+@%=:,-]+")
@@ -80,6 +85,14 @@ def _hooks(root: Path, jev: bool, follow: Optional[str] = None) -> dict:
 
 def _ours(hook) -> bool:
     return isinstance(hook, dict) and MARK in str(hook.get("command", ""))
+
+
+def _installed_with_jev(settings: dict) -> bool:
+    """Whether the Stop hook install put in place asks Jev: only such an install sets
+    FOCUSED_JEV_LEDGER, so only it takes the switch away again."""
+    return any(_ours(hook) and str(hook.get("command", "")).startswith("FOCUSED_JEV=1 ")
+               for group in (settings.get("hooks") or {}).get("Stop", []) if isinstance(group, dict)
+               for hook in (group.get("hooks") or []))
 
 
 def _without_ours(hooks: dict) -> dict:
@@ -161,11 +174,18 @@ def install(root: Optional[Path] = None, jev: bool = False, settings_path: Optio
             raise ValueError(f"{folder} exists and isn't focused's, so nothing was installed")
     skills = {name: _skill(root, name) for name in SKILLS}
 
+    had_jev = _installed_with_jev(settings)
     hooks = _without_ours(settings.get("hooks") or {})
     for event, groups in _hooks(root, jev, follow).items():
         hooks[event] = hooks.get(event, []) + groups
     settings["hooks"] = hooks
     settings["env"] = dict(settings.get("env") or {}, **{ENV_MARK[0]: ENV_MARK[1]})
+    if jev:
+        # Only where it isn't set: a person's FOCUSED_JEV_LEDGER=0 survives the reinstall
+        # that each update with --follow runs.
+        settings["env"].setdefault(LEDGER_ENV[0], LEDGER_ENV[1])
+    elif had_jev and settings["env"].get(LEDGER_ENV[0]) == LEDGER_ENV[1]:
+        settings["env"].pop(LEDGER_ENV[0])  # reinstalled without Jev: the switch it set goes too
     _write(settings_path, settings)
 
     for name, text in skills.items():
@@ -173,7 +193,7 @@ def install(root: Optional[Path] = None, jev: bool = False, settings_path: Optio
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "SKILL.md").write_text(text, encoding="utf-8")
         (folder / SKILL_MARK).write_text(str(root) + "\n", encoding="utf-8")
-    return [f"hooks in {settings_path}: Stop{' with Jev' if jev else ''}, SessionEnd, "
+    return [f"hooks in {settings_path}: Stop{' with Jev, findings and asks' if jev else ''}, SessionEnd, "
             "SessionStart (clear|compact), UserPromptSubmit"
             + (f", and SessionStart (startup|resume) following {follow}" if follow else ""),
             f"commands in {skills_dir}: " + ", ".join(f"/focused-{name}" for name in SKILLS),
@@ -187,14 +207,16 @@ def uninstall(settings_path: Optional[Path] = None, skills_dir: Optional[Path] =
     done = []
     if settings_path.exists():
         settings = _read(settings_path)
+        with_jev = _installed_with_jev(settings)
         hooks = _without_ours(settings.get("hooks") or {})
         if hooks:
             settings["hooks"] = hooks
         else:
             settings.pop("hooks", None)
         env = dict(settings.get("env") or {})
-        if env.get(ENV_MARK[0]) == ENV_MARK[1]:
-            env.pop(ENV_MARK[0])
+        for key, value in (ENV_MARK, LEDGER_ENV) if with_jev else (ENV_MARK,):
+            if env.get(key) == value:
+                env.pop(key)
         if env:
             settings["env"] = env
         else:

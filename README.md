@@ -125,6 +125,55 @@ takes under a second. It asks Jev nothing, so it stays quick, and if the re-read
 fails, the summary comes from the index as it is. Without Jev, every turn shows as
 "not read by Jev".
 
+## Findings and asks
+
+The summary shows the paragraphs that answer your messages. A report's findings often
+answer none of them: in the "Kahnemann" session (2026-11-03), the last report listed what
+an experiment found and five decisions left to you, but your messages around it asked
+where things stood, so the summary kept the status answers and dropped the report.
+
+With `FOCUSED_JEV_LEDGER=1` as well as Jev, Jev also reads the last text Claude wrote in
+each turn and each wake-up, and asks three yes-or-no questions about each paragraph:
+does it report a finding, does it ask you for a choice or for something only you can do,
+does it report progress (tests, CI, commits, pull requests, what a reviewer said). The
+summary then has two more sections, each newest last, a later repeat of the same words
+replacing an earlier one:
+
+- **Findings:** paragraphs Jev reads as a finding and not as progress, up to 800
+  characters each in the summary loaded.
+- **Asked of you:** paragraphs Jev reads as asking you. Whether you settled one isn't
+  tracked yet: "Decisions" shows what you settled.
+
+**Only last texts are read.** What Claude writes between tool calls is mostly narration
+("Checking whether…"). On this repository's longest session, every ask was in a last
+text, and no turn had a short last text after a long earlier one.
+
+**Checked by eye, not measured against labels** (2026-11-04):
+
+- On the Kahnemann report: the two review findings (KT1, KT3) and a test result were read
+  as findings; the opening status and closing line as progress; decisions 1–4 as asks.
+  The fifth, "KT2, KT4–KT13 … are all still undecided", was missed.
+- On the newest six messages of this repository's longest session (350 paragraphs of last
+  texts): asked alone, the finding question took 85, most of them test, CI and pull
+  request reports; with the progress question, 35, the newest of them real findings. 94
+  were read as asks.
+
+**Cost:** three questions a paragraph of a last text. On that whole session, about 120
+requests and 0.8 million tokens, a third of what Jev's answer questions take on it.
+
+**Switched on by the maintainer on 2026-11-04**, on these checks, without first
+measuring the questions against labels. Where it is set:
+
+- a cloud environment installed with `--jev` gets `FOCUSED_JEV_LEDGER=1` in its settings'
+  `env` (below, "Cloud environments");
+- rapid-review-bot's `.claude/settings.json` sets it in its `env`;
+- locally, add `"FOCUSED_JEV_LEDGER": "1"` under `env` beside `FOCUSED_JEV`.
+
+It goes in `env`, not on a hook's command, because the summary after `/clear` and
+`/focused-context` need it as much as the `Stop` hook that asks Jev. Switched off, no
+summary shows findings or asks, even of a session Jev read with it on. The hosted index keeps Jev's readings from focused-context-worker's `0003_marks`; a
+Worker without it ignores them, and a session read back from it has no findings or asks.
+
 ## After an hour without a reply
 
 Claude Code caches the conversation it sends with each request, and in the sessions
@@ -384,7 +433,9 @@ sh "$D/scripts/install-cloud.sh" --jev --follow main
   the same name, so a repository's own copies are shadowed, not doubled.
 - sets `FOCUSED_INSTALL=environment` in the settings' `env`, so a repository's own
   focused hooks, such as rapid-review-bot's, stand down instead of running twice.
-- `--jev` asks Jev in the `Stop` hook. The environment then needs
+- `--jev` asks Jev in the `Stop` hook, and switches on findings and asks
+  (`FOCUSED_JEV_LEDGER=1` in the settings' `env`, unless it is already set: a `0` you set
+  stays through every update; `--uninstall` removes the `1` it set). The environment then needs
   `FOCUSED_OPENROUTER_API_KEY` or `OPENROUTER_API_KEY` among its variables, and access to
   openrouter.ai. The setup script itself can't read the variables; the hooks can.
 - `--follow main` keeps the install at focused-context's main; see "Updates" below.
@@ -439,7 +490,8 @@ A prompt sent with `claude -p` or through the SDK is recorded with
 With Jev on, the hook also needs an OpenRouter key and a network that reaches
 openrouter.ai. Locally that is your own environment. In the cloud it is the
 environment's settings: rapid-review-bot's environment reaches openrouter.ai and
-has the key set, and its `.claude/settings.json` sets `FOCUSED_JEV`.
+has the key set, and its `.claude/settings.json` sets `FOCUSED_JEV` on its hooks and
+`FOCUSED_JEV_LEDGER` in its `env`.
 
 ## Decisions
 
@@ -491,6 +543,12 @@ Made on 2026-11-04 by the maintainer:
 - Jev sifts the candidates for a first message whenever Jev is on.
 - The block added to a first message keeps what answered each earlier message, quoted as
   the messages are: the answers carry most of what recall is for.
+- Findings and asks in the summary are built next, before an index of development
+  documents and an MCP endpoint.
+- Findings and asks are switched on (`FOCUSED_JEV_LEDGER=1`) on their output, checked by
+  eye, without first measuring the questions against labels.
+- A last text with no words leaves the text before it as the turn's last text (the
+  review thread on `_final`, #13).
 
 Open:
 

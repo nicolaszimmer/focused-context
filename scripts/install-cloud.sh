@@ -14,7 +14,8 @@
 #
 # It merges focused's hooks into ~/.claude/settings.json and writes /focused-answers,
 # /focused-find and /focused-context as personal skills; other settings stay as they are.
-#   --jev        ask Jev in the Stop hook: the environment needs FOCUSED_OPENROUTER_API_KEY
+#   --jev        ask Jev in the Stop hook, findings and asks included (FOCUSED_JEV_LEDGER=1
+#                in the settings' env): the environment needs FOCUSED_OPENROUTER_API_KEY
 #                or OPENROUTER_API_KEY among its variables, and access to openrouter.ai
 #   --follow B   keep the install at branch B: each session checks it as it starts and, when
 #                it has moved, installs that version for the sessions after (focused/update.py)

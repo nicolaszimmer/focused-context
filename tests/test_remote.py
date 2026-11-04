@@ -26,7 +26,7 @@ from focused import cli, remote, store  # noqa: E402
 from focused.transcript import LISTED, is_own_command  # noqa: E402
 
 TOKEN = "test-token"
-TABLES = ("turns", "parts", "paras", "pairs")
+TABLES = ("turns", "parts", "paras", "pairs", "marks")
 
 
 class FakeWorker:
@@ -115,7 +115,9 @@ class FakeWorker:
         self.thread.start()
 
     def put(self, session, body):
-        held = self.sessions.setdefault(session, {table: [] for table in TABLES})
+        held = self.sessions.setdefault(session, {})
+        for table in TABLES:
+            held.setdefault(table, [])
         replaced = {t["turn_key"] for t in body.get("turns", [])} | set(body.get("gone", []))
         for table in TABLES:
             held[table] = [row for row in held[table] if row["turn_key"] not in replaced]
@@ -168,7 +170,7 @@ class FakeWorker:
 
 def local_rows(conn, session):
     groups = remote._groups(conn, session)
-    return {table: sorted((row for g in groups.values() for row in g[table]), key=lambda r: json.dumps(r, sort_keys=True))
+    return {table: sorted((row for g in groups.values() for row in g.get(table, [])), key=lambda r: json.dumps(r, sort_keys=True))
             for table in TABLES}
 
 
@@ -325,6 +327,33 @@ class ReadBackTest(RemoteFixture):
             self.assertEqual(remote.push(there, "s1", "-work-repo")["requests"], 0)
             self.assertEqual(len(self.worker.requests), requests)
         self.assertIsNone(remote.fetch("nope"))
+
+
+class MarksTest(RemoteFixture):
+    def ledger_session(self):
+        from test_jev import LEDGER_SESSION, FakeJev
+        self.write(LEDGER_SESSION)
+        here = self.index()
+        store.ask_jev(here, "s1", ask=FakeJev(), ledger=True)
+        remote.push(here, "s1", "-work-repo")
+        return here
+
+    def test_marks_go_with_their_turn_and_read_back(self):
+        here = self.ledger_session()
+        self.assertEqual(len(self.worker.sessions["s1"]["marks"]), 7)
+        with closing(store.connect(self.dir / "elsewhere.sqlite")) as there:
+            remote.save(there, "s1", remote.fetch("s1"))
+            self.assertEqual(local_rows(there, "s1"), local_rows(here, "s1"))
+            self.assertEqual(store.ledger(there, "s1"), store.ledger(here, "s1"))
+            self.assertTrue(any(row["finding"] for row in store.ledger(there, "s1")))
+
+    def test_a_worker_that_keeps_no_marks_reads_back_without_them(self):
+        here = self.ledger_session()
+        del self.worker.sessions["s1"]["marks"]  # a Worker from before 0.9.0
+        with closing(store.connect(self.dir / "elsewhere.sqlite")) as there:
+            remote.save(there, "s1", remote.fetch("s1"))
+            self.assertEqual(store.ledger(there, "s1"), [])
+            self.assertEqual(store.turn_views(there, "s1"), store.turn_views(here, "s1"))
 
 
 class HostedCliTest(RemoteFixture):

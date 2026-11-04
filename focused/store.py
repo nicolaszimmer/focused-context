@@ -94,6 +94,19 @@ CREATE TABLE IF NOT EXISTS pairs (
     wording TEXT NOT NULL,
     PRIMARY KEY (session_id, turn_key, n, para_key)
 );
+-- Jev's reading of what a paragraph of a last text leaves for a later reader (jev.LEDGER):
+-- whether it reports a finding, asks the person, reports progress. Asked only with
+-- FOCUSED_JEV_LEDGER=1.
+CREATE TABLE IF NOT EXISTS marks (
+    session_id TEXT NOT NULL,
+    turn_key TEXT NOT NULL,
+    para_key TEXT NOT NULL,
+    finding REAL NOT NULL,
+    ask REAL NOT NULL,
+    progress REAL NOT NULL,
+    wording TEXT NOT NULL,
+    PRIMARY KEY (session_id, para_key)
+);
 CREATE VIRTUAL TABLE IF NOT EXISTS paras_fts USING fts5(text, content='paras', content_rowid='id');
 CREATE TRIGGER IF NOT EXISTS paras_ai AFTER INSERT ON paras BEGIN
     INSERT INTO paras_fts (rowid, text) VALUES (new.id, new.text);
@@ -284,7 +297,7 @@ def _index_parts(conn: sqlite3.Connection, session_id: str, parsed: Transcript) 
     # compaction's summary in 0.8.1) keeps no parts, answers or paragraphs of its own: its
     # paragraphs are filed under the message it follows.
     unlisted = [(session_id, t.key) for t in parsed.turns if t.origin not in LISTED or is_own_command(t.prompt)]
-    for table in ("pairs", "parts", "paras"):
+    for table in ("pairs", "marks", "parts", "paras"):
         conn.executemany(f"DELETE FROM {table} WHERE session_id = ? AND turn_key = ?", unlisted)
     for turn in parsed.turns:
         if turn.origin not in LISTED or is_own_command(turn.prompt):
@@ -317,19 +330,21 @@ def _index_parts(conn: sqlite3.Connection, session_id: str, parsed: Transcript) 
                             (session_id, key, turn.key, source.key, seq, where, source.started_at, text))
                     elif tuple(row) != (text, seq, where):
                         if row[0] != text:  # a different paragraph now: Jev's answers about it no longer hold
-                            conn.execute("DELETE FROM pairs WHERE session_id = ? AND para_key = ?", (session_id, key))
+                            for table in ("pairs", "marks"):
+                                conn.execute(f"DELETE FROM {table} WHERE session_id = ? AND para_key = ?", (session_id, key))
                         conn.execute("UPDATE paras SET text = ?, seq = ?, place = ? WHERE session_id = ? AND para_key = ?",
                                      (text, seq, where, session_id, key))
         stale = [row[0] for row in conn.execute(
             "SELECT para_key FROM paras WHERE session_id = ? AND turn_key = ?", (session_id, turn.key)) if row[0] not in seen]
         conn.executemany("DELETE FROM paras WHERE session_id = ? AND para_key = ?", [(session_id, k) for k in stale])
-        conn.executemany("DELETE FROM pairs WHERE session_id = ? AND para_key = ?", [(session_id, k) for k in stale])
+        for table in ("pairs", "marks"):
+            conn.executemany(f"DELETE FROM {table} WHERE session_id = ? AND para_key = ?", [(session_id, k) for k in stale])
     _drop_orphans(conn)
 
 
 def _drop_orphans(conn: sqlite3.Connection) -> None:
     """Parts, paragraphs and Jev's answers go with their turn."""
-    for table in ("parts", "paras", "pairs"):
+    for table in ("parts", "paras", "pairs", "marks"):
         conn.execute(f"DELETE FROM {table} WHERE NOT EXISTS (SELECT 1 FROM turns t WHERE t.session_id = "
                      f"{table}.session_id AND t.turn_key = {table}.turn_key)")
 
@@ -377,16 +392,18 @@ def _prune_files(sessions: list, cutoff: float) -> None:
 
 
 def ask_jev(conn: sqlite3.Connection, session_id: str, ask: jev.Ask = jev.http_ask,
-            budget: float = 90.0, clock=None) -> dict:
+            budget: float = 90.0, clock=None, ledger: Optional[bool] = None) -> dict:
     """Ask Jev what it hasn't been asked about this session yet, latest turn first, until
     `budget` seconds are spent; the next run goes on from there. Every request gets the
     deadline, so a slow one can't run past it. A turn Jev fails on is noted in
     "errors" and skipped, so it can't hold up the others. Answers are kept per wording,
-    so a reworded question is asked again rather than reused."""
+    so a reworded question is asked again rather than reused. With `ledger` (by default,
+    jev.ledger_enabled()), each turn's paragraphs are also read for findings and asks."""
     import time
     clock = clock or time.monotonic
+    ledger = jev.ledger_enabled() if ledger is None else ledger
     started, deadline = clock(), time.monotonic() + budget
-    done = {"requests": 0, "kinds": 0, "pairs": 0, "complete": True, "errors": []}
+    done = {"requests": 0, "kinds": 0, "pairs": 0, "marks": 0, "complete": True, "errors": []}
 
     def call(state, questions):
         if clock() - started > budget:
@@ -394,12 +411,18 @@ def ask_jev(conn: sqlite3.Connection, session_id: str, ask: jev.Ask = jev.http_a
         done["requests"] += 1
         return ask(state, questions, deadline=deadline)
 
+    # A message with parts, or with paragraphs: one with no text of its own (an image
+    # alone) has no parts to ask about, but the ledger reads what Claude wrote to it.
     turns = [row[0] for row in conn.execute(
-        "SELECT p.turn_key FROM parts p JOIN turns t ON t.session_id = p.session_id AND t.turn_key = p.turn_key "
-        "WHERE p.session_id = ? GROUP BY p.turn_key ORDER BY MAX(t.seq) DESC", (session_id,))]
+        "SELECT t.turn_key FROM turns t WHERE t.session_id = ? AND ("
+        "EXISTS (SELECT 1 FROM parts p WHERE p.session_id = t.session_id AND p.turn_key = t.turn_key) OR "
+        "EXISTS (SELECT 1 FROM paras p WHERE p.session_id = t.session_id AND p.turn_key = t.turn_key)) "
+        "ORDER BY t.seq DESC", (session_id,))]
     for turn_key in turns:
         try:
             _ask_turn(conn, session_id, turn_key, call, done)
+            if ledger:
+                _ask_ledger(conn, session_id, turn_key, call, done)
         except jev.JevTimeout:
             done["complete"] = False
             return done
@@ -442,6 +465,66 @@ def _ask_turn(conn: sqlite3.Connection, session_id: str, turn_key: str, call, do
                     [(session_id, turn_key, n, key, float(answers[name]["probabilities"]["answers"]),
                       float(answers[name]["probabilities"]["partly"]), jev.WORDING) for name, key in names.items()])
             done["pairs"] += len(names)
+
+
+def _reply(para_key: str) -> int:
+    """Which of its turn's texts a paragraph is in: para keys are `<turn key>:<text>.<paragraph>`."""
+    try:
+        return int(para_key.rsplit(":", 1)[1].split(".", 1)[0])
+    except (IndexError, ValueError):
+        return 0
+
+
+def _final(rows: list, key=lambda row: row[0], source=lambda row: row[-1]) -> list:
+    """The rows of paragraphs in the last text Claude wrote in their turn or wake-up: its
+    report. What it wrote between tool calls is mostly narration ("Checking whether…"); on
+    this repository's longest session (2026-11-04), every ask was in a last text, and no
+    turn had a short last text after a long earlier one."""
+    last: dict = {}
+    for row in rows:
+        last[source(row)] = max(last.get(source(row), -1), _reply(key(row)))
+    return [row for row in rows if _reply(key(row)) == last[source(row)]]
+
+
+def _ask_ledger(conn: sqlite3.Connection, session_id: str, turn_key: str, call, done: dict) -> None:
+    """Ask the ledger's questions about the paragraphs of a turn's last texts that Jev
+    hasn't read in the current wording, and keep the answers."""
+    texts = [row[0] for row in conn.execute("SELECT text FROM parts WHERE session_id = ? AND turn_key = ? ORDER BY n",
+                                            (session_id, turn_key))]
+    paras = [(row[0], row[1], row[2]) for row in _final(conn.execute(
+        "SELECT para_key, place, text, source_key FROM paras WHERE session_id = ? AND turn_key = ? ORDER BY seq",
+        (session_id, turn_key)).fetchall())]
+    asked = {row[0] for row in conn.execute("SELECT para_key FROM marks WHERE session_id = ? AND turn_key = ? AND wording = ?",
+                                            (session_id, turn_key, jev.LEDGER_WORDING))}
+    wanted = {key for key, _, _ in paras if key not in asked}
+    for state, questions, batch in jev.ledger_requests(texts, paras, wanted) if wanted else []:
+        answers = call(state, questions)
+        with conn:
+            conn.executemany(
+                "INSERT INTO marks (session_id, turn_key, para_key, finding, ask, progress, wording) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (session_id, para_key) DO UPDATE SET "
+                "turn_key = excluded.turn_key, finding = excluded.finding, ask = excluded.ask, "
+                "progress = excluded.progress, wording = excluded.wording",
+                [(session_id, turn_key, key, *(jev.read_ledger(answers, pid)[mark] for mark in ("finding", "ask", "progress")),
+                  jev.LEDGER_WORDING) for key, pid in batch.items()])
+        done["marks"] += len(batch)
+
+
+def ledger(conn: sqlite3.Connection, session_id: str) -> list:
+    """The paragraphs of last texts (_final) that Jev read as reporting a finding or
+    asking the person, in the order written: [{turn_key, started_at, place, text, finding,
+    ask}]. A finding is at least jev.CUT on "finding" and under it on "progress" (a test or
+    CI report isn't one); an ask, at least jev.CUT on "ask". A paragraph read while its
+    text was the last, and no longer is, isn't shown."""
+    rows = conn.execute(
+        "SELECT p.turn_key, p.started_at, p.place, p.text, m.finding >= ? AND m.progress < ?, m.ask >= ?, "
+        "p.para_key, p.source_key FROM paras p "
+        "JOIN turns t ON t.session_id = p.session_id AND t.turn_key = p.turn_key "
+        "LEFT JOIN marks m ON m.session_id = p.session_id AND m.para_key = p.para_key AND m.turn_key = p.turn_key "
+        "AND m.wording = ? WHERE p.session_id = ? ORDER BY t.seq, p.seq",
+        (jev.CUT, jev.CUT, jev.CUT, jev.LEDGER_WORDING, session_id)).fetchall()
+    return [{"turn_key": r[0], "started_at": r[1], "place": r[2], "text": r[3], "finding": bool(r[4]), "ask": bool(r[5])}
+            for r in _final(rows, key=lambda row: row[6], source=lambda row: row[7]) if r[4] or r[5]]
 
 
 def turn_views(conn: sqlite3.Connection, session_id: str) -> dict:

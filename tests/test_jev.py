@@ -18,10 +18,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import isolate  # noqa: E402,F401  (before any test runs: none reaches a real service)
 
-from test_focused import SESSION, Fixture, assistant, text, user  # noqa: E402
+from test_focused import HUMAN, SESSION, WAKE, Fixture, assistant, result, text, tool, user  # noqa: E402
 
-from focused import cli, jev, store  # noqa: E402
+from focused import cli, jev, remote, store, summary  # noqa: E402
 from focused.parts import message_parts, paragraphs, place  # noqa: E402
+
+
+LEDGER_WORDS = {"finding": "found", "ask": "decide", "progress": "passes"}
 
 
 class FakeJev:
@@ -35,7 +38,11 @@ class FakeJev:
         self.requests.append((state, questions))
         answers = {}
         for name, question in questions.items():
-            if question["type"] == "noul":
+            mark, _, pid = name.partition("_")
+            if mark in jev.LEDGER:  # the ledger: a word in the paragraph says what it does
+                paragraph = next(p for p in state["paragraphs"] if p["id"] == pid)["text"].lower()
+                answers[name] = {"type": "noul", "noul": 0.9 if LEDGER_WORDS[mark] in paragraph else 0.1}
+            elif question["type"] == "noul":
                 kind, part = name.rsplit("_", 1)
                 yes = (kind == "question") if part == "p1" else (kind == "information")
                 answers[name] = {"type": "noul", "noul": 0.9 if yes else 0.1}
@@ -263,6 +270,190 @@ class JevIndexTest(Fixture):
         conn = self.index()
         hits = store.search_paras(conn, ["action"])
         self.assertEqual([(h["turn_key"], h["hit"]) for h in hits], [("u1", "No [action] needed.")])
+
+
+LEDGER_SESSION = [
+    user("u1", "Why is the cache slow?", **HUMAN),
+    assistant(text("Checking what I found so far."), tool("t1", "Read", file_path="x")),
+    result("t1", "ok"),
+    assistant(text("I found the cause: the cache is rebuilt on every read.\n\n"
+                   "Two ways on, for you to decide:\n\n"
+                   "1. Decide whether to keep the cache.\n"
+                   "2. Decide whether to drop it.\n\n"
+                   "I found that the tests and CI all passes.\n\n"
+                   "I'll wait for you.")),
+    user("w1", "<task-notification>CI green</task-notification>", ts="2026-11-03T06:05:00.000Z", **WAKE),
+    assistant(text("Decide whether to keep the cache.")),
+]
+
+
+class LedgerWordingTest(unittest.TestCase):
+    def test_off_unless_switched_on_with_jev(self):
+        with mock.patch.dict(os.environ, {"FOCUSED_JEV": "1", "OPENROUTER_API_KEY": "k"}, clear=True):
+            self.assertFalse(jev.ledger_enabled())
+        with mock.patch.dict(os.environ, {"FOCUSED_JEV_LEDGER": "1", "OPENROUTER_API_KEY": "k"}, clear=True):
+            self.assertFalse(jev.ledger_enabled())
+        with mock.patch.dict(os.environ, {"FOCUSED_JEV": "1", "FOCUSED_JEV_LEDGER": "1", "OPENROUTER_API_KEY": "k"}):
+            self.assertTrue(jev.ledger_enabled())
+
+    def test_its_words_have_their_own_digest(self):
+        for template in (jev.LEDGER_POLICY, jev.LEDGER, jev.LEDGER_QUESTION, jev.LEDGER_TRUE, jev.LEDGER_FALSE):
+            self.assertIn(template, jev.LEDGER_WORDED)
+            self.assertNotIn(template, jev.WORDED)  # rewording the ledger asks nothing else again
+        self.assertNotEqual(jev.LEDGER_WORDING, jev.WORDING)
+
+    def test_every_paragraph_is_asked_each_question_in_batches_with_all_in_view(self):
+        paras = [(f"k{i}", "reply to the message", f"paragraph {i}") for i in range(30)]
+        requests = jev.ledger_requests(["why?"], paras, {key for key, _, _ in paras})
+        self.assertEqual([len(q) for _, q, _ in requests], [39, 39, 12])
+        self.assertTrue(all(len(state["paragraphs"]) == 30 for state, _, _ in requests))
+        asked = [key for _, _, batch in requests for key in batch]
+        self.assertEqual(sorted(asked), sorted(key for key, _, _ in paras))
+        state, questions, batch = requests[0]
+        pid = batch["k0"]
+        self.assertEqual(sorted(name for name in questions if name.endswith(f"_{pid}")),
+                         [f"ask_{pid}", f"finding_{pid}", f"progress_{pid}"])
+        self.assertEqual(questions[f"ask_{pid}"]["instructions"],
+                         f"Does the paragraph with id {pid} in state.paragraphs ask the person for a choice or for "
+                         "something only they can do? (See state.policy.)")
+
+    def test_a_long_turn_is_read_in_windows(self):
+        paras = [(f"k{i}", "reply to the message", "x" * 100) for i in range(90)]
+        with mock.patch.object(jev, "MAX_CHARS", 5000):
+            requests = jev.ledger_requests(["a part"], paras, {key for key, _, _ in paras})
+        self.assertEqual(sorted(key for _, _, batch in requests for key in batch), sorted(key for key, _, _ in paras))
+        self.assertTrue(all(len(json.dumps(state)) <= 5000 + 1500 for state, _, _ in requests))
+
+
+class LedgerTest(Fixture):
+    def setUp(self):
+        super().setUp()
+        self.write(LEDGER_SESSION)
+        os.environ["FOCUSED_JEV_LEDGER"] = "1"  # shown; asked only where a test passes ledger=True
+
+    def asked(self, conn):
+        return [row[0] for row in conn.execute("SELECT p.text FROM marks m JOIN paras p USING (session_id, para_key) ORDER BY p.seq")]
+
+    def test_asked_only_when_switched_on(self):
+        conn = self.index()
+        with mock.patch.dict(os.environ, {"FOCUSED_JEV_LEDGER": ""}):
+            self.assertEqual(store.ask_jev(conn, "s1", ask=FakeJev())["marks"], 0)
+        self.assertEqual(self.asked(conn), [])
+        self.assertNotIn("## Findings", summary.build(conn, "s1")[1])
+
+    def test_only_the_last_text_of_a_turn_or_wake_up_is_read_and_only_once(self):
+        conn = self.index()
+        done = store.ask_jev(conn, "s1", ask=FakeJev(), ledger=True)
+        self.assertEqual(done["marks"], 7)
+        self.assertNotIn("Checking what I found so far.", self.asked(conn))  # narration between tool calls
+        self.assertIn("Decide whether to keep the cache.", self.asked(conn))  # the wake-up's
+        again = store.ask_jev(conn, "s1", ask=FakeJev(), ledger=True)
+        self.assertEqual((again["requests"], again["marks"]), (0, 0))
+
+    def test_the_summary_shows_findings_and_asks(self):
+        conn = self.index()
+        store.ask_jev(conn, "s1", ask=FakeJev(), ledger=True)
+        short, full = summary.build(conn, "s1")
+        for text in (short, full):
+            findings = text.split("## Findings\n", 1)[1].split("\n## ", 1)[0]
+            asks = text.split("## Asked of you\n", 1)[1].split("\n## ", 1)[0]
+            self.assertIn("- 06:00 (1): I found the cause: the cache is rebuilt on every read.", findings)
+            self.assertNotIn("tests and CI", findings)  # read as progress, so not a finding
+            self.assertNotIn("Checking what I found", findings)
+            self.assertIn("- 06:00 (1): Decide whether to drop it.", asks)  # without its list number
+            # The wake-up repeats the first choice: only the later one is shown.
+            self.assertIn("- 06:05 (1, after a wake-up): Decide whether to keep the cache.", asks)
+            self.assertEqual(asks.count("keep the cache"), 1)
+            self.assertLess(text.index("## Decisions") if "## Decisions" in text else 0, text.index("## Findings"))
+            self.assertLess(text.index("## Findings"), text.index("## Asked of you"))
+            self.assertLess(text.index("## Asked of you"), text.index("## Messages"))
+
+    def test_what_claude_wrote_to_a_message_without_text_is_read_too(self):
+        self.write([user("u1", [{"type": "image", "source": {"data": "A" * 40}}], **HUMAN),
+                    assistant(text("I found the bug the screenshot shows."))])
+        conn = self.index()
+        done = store.ask_jev(conn, "s1", ask=FakeJev(), ledger=True)
+        self.assertEqual((done["kinds"], done["pairs"], done["marks"]), (0, 0, 1))  # no parts to ask about
+        self.assertEqual([row["text"] for row in store.ledger(conn, "s1") if row["finding"]],
+                         ["I found the bug the screenshot shows."])
+
+    def test_switched_off_no_summary_shows_them_even_once_read(self):
+        conn = self.index()
+        store.ask_jev(conn, "s1", ask=FakeJev(), ledger=True)
+        os.environ["FOCUSED_JEV_LEDGER"] = ""
+        for text in summary.build(conn, "s1"):
+            self.assertNotIn("## Findings", text)
+            self.assertNotIn("## Asked of you", text)
+        self.assertGreater(len(store.ledger(conn, "s1")), 0)  # kept, for when it is switched on
+
+    def test_only_a_word_for_word_repeat_replaces_an_earlier_entry(self):
+        self.write([user("u1", "Report.", **HUMAN),
+                    assistant(text("I found that the cache is rebuilt on every read in module A.\n\n"
+                                   "I found that the cache is rebuilt on every read in module B.\n\n"
+                                   "1. **I found** that the cache is rebuilt on every read in module B.\n\n"
+                                   "That is all."))])
+        conn = self.index()
+        store.ask_jev(conn, "s1", ask=FakeJev(), ledger=True)
+        findings = summary.build(conn, "s1")[1].split("## Findings", 1)[1].split("## Messages", 1)[0]
+        self.assertIn("module A", findings)
+        self.assertNotEqual(summary._words("I found a == b fails."), summary._words("I found a != b fails."))
+        self.assertNotEqual(summary._words("I found C++ builds."), summary._words("I found C# builds."))
+        self.assertEqual(findings.count("module B"), 1)  # its list number and markup aside, the same words
+        self.assertIn("**I found** that the cache is rebuilt on every read in module B.", findings)  # the later
+
+    def test_the_loaded_summary_keeps_the_newest_and_counts_the_rest(self):
+        entries = [user("u1", "Report.", **HUMAN),
+                   assistant(text("\n\n".join(f"I found result number {n} " + "of note " * 60 for n in range(1, 13))))]
+        self.write(entries)
+        conn = self.index()
+        store.ask_jev(conn, "s1", ask=FakeJev(), ledger=True)
+        short, full = summary.build(conn, "s1", cap=4_000)
+        self.assertLessEqual(len(short), 4_000)
+        self.assertIn("earlier findings are only in the full summary.", short)
+        self.assertIn("I found result number 12 ", short)
+        self.assertNotIn("I found result number 1 ", short)
+        self.assertEqual(full.split("## Findings", 1)[1].split("## Messages", 1)[0].count("I found result number"), 12)
+
+    def test_a_changed_paragraph_and_a_new_last_text_are_read_again(self):
+        conn = self.index()
+        store.ask_jev(conn, "s1", ask=FakeJev(), ledger=True)
+        grown = [dict(e) for e in LEDGER_SESSION]
+        grown[3] = assistant(text("I found the cause: the cache is rebuilt twice per read."), tool("t2", "Read", file_path="y"))
+        grown[4:4] = [result("t2", "ok"), assistant(text("I found nothing else. You decide."))]
+        self.write(grown)
+        self.index()
+        shown = [row["text"] for row in store.ledger(conn, "s1")]
+        self.assertFalse(any("cache is rebuilt" in text for text in shown))  # no longer the last text
+        done = store.ask_jev(conn, "s1", ask=FakeJev(), ledger=True)
+        self.assertEqual(done["marks"], 1)
+        self.assertIn("I found nothing else. You decide.", [row["text"] for row in store.ledger(conn, "s1")])
+
+    def test_rewording_the_ledger_asks_only_the_ledger_again(self):
+        conn = self.index()
+        store.ask_jev(conn, "s1", ask=FakeJev(), ledger=True)
+        with mock.patch.object(jev, "LEDGER_WORDING", "reworded"):
+            self.assertEqual(store.ledger(conn, "s1"), [])
+            done = store.ask_jev(conn, "s1", ask=FakeJev(), ledger=True)
+        self.assertEqual((done["kinds"], done["pairs"], done["marks"]), (0, 0, 7))
+
+    def test_retention_takes_the_marks_too(self):
+        conn = self.index()
+        store.ask_jev(conn, "s1", ask=FakeJev(), ledger=True)
+        from datetime import datetime, timezone
+        self.now = datetime(2026, 12, 20, tzinfo=timezone.utc)
+        self.index()
+        self.assertEqual(conn.execute("SELECT count(*) FROM marks").fetchone()[0], 0)
+
+    def test_a_turn_without_marks_is_pushed_as_before(self):
+        conn = self.index()
+        store.ask_jev(conn, "s1", ask=FakeJev())
+        before = remote._groups(conn, "s1")
+        self.assertTrue(all(sorted(group) == ["pairs", "paras", "parts", "turns"] for group in before.values()))
+        store.ask_jev(conn, "s1", ask=FakeJev(), ledger=True)
+        after = remote._groups(conn, "s1")
+        self.assertEqual(len(after["u1"]["marks"]), 7)
+        self.assertEqual({key: group for key, group in after.items() if key != "u1"},
+                         {key: group for key, group in before.items() if key != "u1"})
 
 
 class HookTest(Fixture):
