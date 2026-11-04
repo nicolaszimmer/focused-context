@@ -1,7 +1,8 @@
 """Jev, the decision model focused asks about each turn.
 
 Two closed questions, both measured against the maintainer's labels on
-2026-11-03 (focused-context-lab, eval/):
+2026-11-03 (focused-context-lab, eval/), and a third, the ledger, not yet measured
+(below, off unless FOCUSED_JEV_LEDGER=1):
 - what each part of a person's message does: four yes-or-no questions, since a
   part can be several kinds at once;
 - whether each paragraph Claude wrote in the turn, or in a wake-up filed under
@@ -219,6 +220,92 @@ def answer_requests(parts: list, n: int, paragraphs: list, wanted: set) -> list:
                 }
             requests.append((state, questions, names))
     return requests
+
+
+# The ledger (focused/summary.py, "Findings" and "Asked of you"): what each paragraph Claude
+# wrote leaves for a later reader, whether or not it answers a part. Asked only with
+# FOCUSED_JEV_LEDGER=1 as well: built on 2026-11-04 at the maintainer's request, switched
+# on only once they have judged its output. Its words have their own LEDGER_WORDING, so
+# changing them asks these questions again and nothing else.
+LEDGER_POLICY = (
+    "state.message is a message a person sent to Claude, an AI coding assistant, during a working session. "
+    "state.paragraphs are the paragraphs of the last text Claude wrote in reply to it, or after a later wake-up "
+    "such as a GitHub notification, as each paragraph's `where` says. "
+    "A paragraph reports a finding when it states something Claude established about the subject of the work "
+    "(how the code behaves, what the data or an experiment shows, what a document says) by checking, measuring, "
+    "testing or reading: a number measured, a cause found, a claim confirmed or refuted, a limit discovered. "
+    "A report on the state of the work is not a finding: whether checks, tests or CI pass or are still running, "
+    "what was committed, pushed, opened or merged, what a reviewer or a bot said, or what Claude will do next. "
+    "A paragraph asks the person when it puts to them a choice only they can make, or asks them for something "
+    "only they can do or give, such as a decision, an approval, a merge or a secret. "
+    "A paragraph reports progress when it says where the work stands: whether checks, tests or CI pass or are "
+    "running, what was committed, pushed, opened, merged or deployed, what a reviewer or a bot said, what was "
+    "changed, or what Claude will do next. "
+    "A paragraph can do several of these or none; one that only introduces the paragraphs after it does none. "
+    + DATA_ONLY
+)
+LEDGER = {
+    "finding": ("report a finding", "reports a finding", "reports no finding"),
+    "ask": ("ask the person for a choice or for something only they can do",
+            "asks the person for a choice or for something only they can do",
+            "asks the person for nothing"),
+    # Asked apart from "finding": Jev doesn't keep to the exclusion in the finding's
+    # definition, and reads most test, CI and pull request reports as findings too. A
+    # finding is shown only when this is under CUT (store.ledger).
+    "progress": ("report progress on the work", "reports progress on the work", "reports no progress on the work"),
+}
+LEDGER_QUESTION = "Does the paragraph with id {pid} in state.paragraphs {ask}? (See state.policy.)"
+LEDGER_TRUE = "The paragraph with id {pid} {yes}."
+LEDGER_FALSE = "The paragraph with id {pid} {no}."
+LEDGER_WORDED = (MODEL, LEDGER_POLICY, LEDGER, LEDGER_QUESTION, LEDGER_TRUE, LEDGER_FALSE, MESSAGE_CUT, MAX_MESSAGE)
+LEDGER_WORDING = hashlib.sha256(json.dumps(LEDGER_WORDED).encode()).hexdigest()[:12]
+
+
+def ledger_enabled() -> bool:
+    return os.environ.get("FOCUSED_JEV_LEDGER") == "1" and enabled()
+
+
+def ledger_requests(parts: list, paragraphs: list, wanted: set) -> list:
+    """[(state, questions, {paragraph key: id})] asking each LEDGER question about each
+    paragraph in `wanted`. paragraphs: [(key, where, text)] in
+    order. Every paragraph that fits is in view, so a list's items are read with what
+    introduces them; a turn too long for one request is read in windows."""
+    message = _message(parts)
+    base = len(message) + len(LEDGER_POLICY) + 200
+    windows, current, size = [], [], base
+    for paragraph in paragraphs:
+        cost = len(paragraph[2]) + len(paragraph[1]) + 40
+        if current and size + cost > MAX_CHARS:
+            windows.append(current)
+            current, size = [], base
+        current.append(paragraph)
+        size += cost
+    if current:
+        windows.append(current)
+    per = max(1, MAX_QUESTIONS // len(LEDGER))
+    requests = []
+    for window in windows:
+        ids = {key: f"q{i}" for i, (key, _, _) in enumerate(window, 1)}
+        state = {"policy": LEDGER_POLICY, "message": message,
+                 "paragraphs": [{"id": ids[key], "where": where, "text": text} for key, where, text in window]}
+        asked = [key for key, _, _ in window if key in wanted]
+        for start in range(0, len(asked), per):
+            batch = {key: ids[key] for key in asked[start:start + per]}
+            questions = {}
+            for pid in batch.values():
+                for mark, (ask, yes, no) in LEDGER.items():
+                    questions[f"{mark}_{pid}"] = {
+                        "type": "noul",
+                        "instructions": LEDGER_QUESTION.format(pid=pid, ask=ask),
+                        "criteria": {"true": LEDGER_TRUE.format(pid=pid, yes=yes),
+                                     "false": LEDGER_FALSE.format(pid=pid, no=no)},
+                    }
+            requests.append((state, questions, batch))
+    return requests
+
+
+def read_ledger(answers: dict, pid: str) -> dict:
+    return {mark: float(answers[f"{mark}_{pid}"]["noul"]) for mark in LEDGER}
 
 
 # Recall (focused/recall.py): does an earlier message, with what answered it then, bear on

@@ -51,6 +51,7 @@ any cloud session, iPhone or Mac                      (installed per environment
 
 planned
    ledger: decisions waiting on you · to-dos · findings · PRs, from more Jev questions
+           (findings and asks in the summary: built in 0.9, switched off)
    view page served by the Worker: answer a decision there, and it reaches the ledger
    GitHub ── webhook ──▶ Worker triage (rules) ── actionable ──▶ a fresh steward session
 ```
@@ -68,7 +69,8 @@ planned
 | **Choosing a session** | In a session where nothing has been said yet, `/focused-context` offers three earlier sessions by title, with a field for any other: those of this session's repositories first, then those of related repositories, then the latest. Sessions are named by their titles everywhere. | `focused/cli.py`, `skills/context` | Built (0.6) |
 | **Recall** | What earlier sessions said that bears on what the person does now, found by meaning (Workers AI's bge-m3 embeddings of each message part, in Vectorize) and by words, each with what answered it. A short block joins a session's first typed message; `/focused-recall` gives more, and Claude may use it itself. Jev sifts a first message's candidates when it is on. | `focused/recall.py`; the Worker's `src/recall.ts` | Built (0.8) |
 | **Repository graph** | How sessions relate. Each session links to the repositories it worked in, weighted by its transcript entries there (working directories, and the files and folders tools were given); repositories are related when one session worked in both. Recall and the choice of a session go to the same repositories first, then to related ones, among what is relevant. Repositories are named by their `origin`, the same in every container. | `focused/repos.py`; the Worker's `session_repos` | Built (0.8) |
-| **Ledger** | Three more Jev questions about Claude's paragraphs: does it ask the person to decide, does it report a checked result, does it commit Claude to doing something. Later messages are paired against those asks, the way answers are paired today, so an ask closes when it is settled. The ledger collects what is waiting on the person, the to-dos, the findings and the PRs across sessions. | to be built | Planned |
+| **Findings and asks** | The ledger's first step. Jev reads the last text Claude wrote in each turn and wake-up, three questions a paragraph: does it report a finding, does it ask the person, does it report progress. The summary shows the findings that aren't progress, and the asks, newest last. | `focused/jev.py` (`LEDGER`), `store.py` (`marks`), `summary.py`; the Worker's `marks` | Built (0.9), switched off (`FOCUSED_JEV_LEDGER=1`) until the maintainer judges its output |
+| **Ledger** | Later messages paired against the asks, the way answers are paired, so an ask closes when it is settled; a question for what Claude commits to doing. The ledger collects what is waiting on the person, the to-dos, the findings and the PRs across sessions. | to be built | Planned |
 | **View page** | A page served by the Worker that shows the ledger. A decision answered there is written to it. | to be built | Planned |
 | **Restore from the ledger** | The summary's decisions and open items come from the ledger, which spans every session and device, not one transcript. | to be built | Planned |
 | **Triage and steward sessions** | Working sessions stop subscribing to their PRs. GitHub sends webhooks to the Worker, plain rules drop what needs nothing, and each actionable event starts a fresh, small session through a scheduled task's API trigger, on the maintainer's plan. A PR counts as ready in the ledger only when CI is green and no finding is open. | to be built | Planned |
@@ -115,8 +117,9 @@ repository per working session. What was built differs:
 2. **Recall** (decided on 2026-11-03, before the ledger). Built (0.8), with the repository
    graph. Done when a new session's first message brings what earlier sessions said about
    it.
-3. **Ledger and view page.** The three new Jev questions, then the page. Ledger items join
-   recall.
+3. **Ledger and view page.** Findings and asks in the summary first (decided on
+   2026-11-04, before an index of development documents): built (0.9), switched off until
+   judged. Then asks closing when settled, to-dos, and the page. Ledger items join recall.
 4. **Triage and steward sessions.** Done when working sessions get no PR wake-ups.
 
 ## Decisions
@@ -155,15 +158,20 @@ Made by the maintainer on 2026-11-04:
 - Jev sifts the candidates for a first message whenever Jev is on.
 - The block added to a first message keeps what answered each earlier message, quoted as
   the messages are: the answers carry most of what recall is for.
+- Findings and asks in the summary are built next, before an index of development
+  documents and an MCP endpoint.
 
 Open:
 
-1. How the Worker is deployed: by hand with `wrangler`, or by a GitHub Actions workflow
+1. Whether to switch on findings and asks (`FOCUSED_JEV_LEDGER=1`), judged on their
+   output (README, "Findings and asks"); and whether the finding and ask questions should
+   first be measured against the maintainer's labels.
+2. How the Worker is deployed: by hand with `wrangler`, or by a GitHub Actions workflow
    with a Cloudflare token.
-2. Retention: 30 days, locally and hosted; and whether a turn with no timestamp should
+3. Retention: 30 days, locally and hosted; and whether a turn with no timestamp should
    ever expire (none has been seen).
-3. Project grouping: every cloud session with more than one repository runs in
+4. Project grouping: every cloud session with more than one repository runs in
    `/home/user`, so all of them are one project, `-home-user`. Recall and the choice of a
    session now follow the repository graph instead, which may settle this; whether the
    project should still matter anywhere (search, naming a session by title) is open.
-4. The idle stop's minimum, 100,000 tokens, and the summary's limit, 9,500 characters.
+5. The idle stop's minimum, 100,000 tokens, and the summary's limit, 9,500 characters.

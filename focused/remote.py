@@ -46,8 +46,11 @@ COLUMNS = {
     "parts": ("turn_key", "n", "text", "queued", "kinds", "wording"),
     "paras": ("para_key", "turn_key", "source_key", "seq", "place", "started_at", "text"),
     "pairs": ("turn_key", "n", "para_key", "answers", "partly", "wording"),
+    # A Worker from before 0.9.0 ignores marks and sends none back.
+    "marks": ("turn_key", "para_key", "finding", "ask", "progress", "wording"),
 }
-ORDER = {"turns": "seq", "parts": "turn_key, n", "paras": "turn_key, seq", "pairs": "turn_key, n, para_key"}
+ORDER = {"turns": "seq", "parts": "turn_key, n", "paras": "turn_key, seq", "pairs": "turn_key, n, para_key",
+         "marks": "turn_key, para_key"}
 
 
 class RemoteError(Exception):
@@ -133,13 +136,15 @@ def _groups(conn: sqlite3.Connection, session_id: str) -> dict:
     for row in conn.execute(f"SELECT {', '.join(COLUMNS['turns'])} FROM turns WHERE session_id = ? ORDER BY seq",
                             (session_id,)):
         groups[row[0]] = {"turns": [dict(zip(COLUMNS["turns"], row))], "parts": [], "paras": [], "pairs": []}
-    for table in ("parts", "paras", "pairs"):
+    for table in ("parts", "paras", "pairs", "marks"):
         columns = COLUMNS[table]
         for row in conn.execute(f"SELECT {', '.join(columns)} FROM {table} WHERE session_id = ? ORDER BY {ORDER[table]}",
                                 (session_id,)):
             record = dict(zip(columns, row))
             if record["turn_key"] in groups:
-                groups[record["turn_key"]][table].append(record)
+                # A turn without marks is encoded as before 0.9.0, so its digest, and what
+                # the hosted index holds of it, stay as they were.
+                groups[record["turn_key"]].setdefault(table, []).append(record)
     return groups
 
 
@@ -186,7 +191,7 @@ def push(conn: sqlite3.Connection, session_id: str, project: str, timeout: float
         named_gone = gone if i == 0 else []
         body = {"project": project, "first_at": first_at, "last_at": last_at, "title": title, "gone": named_gone,
                 "repos": repos,
-                **{table: [row for key in keys for row in groups[key][table]] for table in COLUMNS}}
+                **{table: [row for key in keys for row in groups[key].get(table, [])] for table in COLUMNS}}
         left = deadline - clock()
         if left < 1:
             raise RemoteError("out of time")
@@ -244,7 +249,7 @@ def save(conn: sqlite3.Connection, session_id: str, data: dict) -> int:
     and note it as pushed, so it isn't sent back unchanged. Returns the turns saved."""
     turns = {row["turn_key"] for row in data.get("turns", [])}
     with conn:
-        for table in ("pairs", "parts", "paras", "turns", "pushed"):
+        for table in ("pairs", "marks", "parts", "paras", "turns", "pushed"):
             conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
         conn.execute(
             "INSERT INTO sessions (session_id, transcript_path, first_at, last_at, title) VALUES (?, NULL, ?, ?, ?) "
