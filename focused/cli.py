@@ -848,7 +848,13 @@ def cmd_docs(args) -> int:
                   f"({done['unchanged_files']} unchanged, not sent), {done['gone']} deleted; "
                   f"{done['sections']} sections, {done['unchanged']} of them unchanged, {done['embedded']} embedded.")
             return 0
-        found = remote.docs_search(" ".join(words), repos=args.repo and [args.repo], limit=args.limit,
+        repo, limit = args.repo, args.limit
+        if not literal:  # --repo and --limit after the words count too, as elsewhere
+            after = _docs_search_parser().parse_args(words)
+            words, repo, limit = after.words, after.repo or repo, after.limit or limit
+            if not words:
+                return _fail(args, "Name what to look for, as in: docs how the Worker is deployed", 2)
+        found = remote.docs_search(" ".join(words), repos=repo and [repo], limit=limit,
                                    min_similarity=docs.ON_DEMAND_MIN)
     except remote.RemoteError as error:
         return _fail(args, f"focused: could not reach the hosted index ({error}).", 1)
@@ -859,6 +865,14 @@ def cmd_docs(args) -> int:
         return 0
     print(docs.listing(found["items"], found["vectors"]))
     return 0
+
+
+def _docs_search_parser():
+    search = Parser(prog="focused docs", description="search development documents")
+    search.add_argument("words", nargs="*")
+    search.add_argument("--limit", type=int, choices=range(1, 31), metavar="1-30")
+    search.add_argument("--repo")
+    return search
 
 
 def _docs_push_parser():

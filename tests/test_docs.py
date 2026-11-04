@@ -81,6 +81,13 @@ class DocsTest(RemoteFixture):
         self.worker.doc_items = [found(via=7)]
         self.assertEqual(run("docs", "x")[0], 0)
 
+    def test_repo_and_limit_after_the_words_are_options(self):
+        self.worker.doc_items = [found()]
+        code, _, err = run("docs", "deploy", "guide", "--repo", REPO, "--limit", "3")
+        self.assertEqual(code, 0, err)
+        body = self.worker.doc_searches[-1]
+        self.assertEqual((body["text"], body["repos"], body["limit"]), ("deploy guide", [REPO], 3))
+
     def test_without_the_hosted_index_or_words_it_says_so(self):
         self.assertEqual(run("docs")[0], 2)
         self.assertEqual(run("docs", "read")[0], 2)
