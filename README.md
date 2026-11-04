@@ -82,6 +82,12 @@ in the context. Starting fresh can. After `/clear`, and after compaction, a
 - your recent messages, each part with the paragraphs Jev found answer it. A
   turn Jev hasn't read shows your message and Claude's last text.
 
+The session `/clear` ended stays the one this session continues: in a session where
+nothing has been said yet, `/focused-context` and `/focused-answers` show it, however
+long after the `/clear`. A command Claude never answers (`/clear` itself, which Claude
+Code writes as the new session's first entry, `/model`, `/cost`) isn't counted as a
+message.
+
 Tool output, narration and wake-ups are left out. For the session this was built
 in, that came to about 5,300 tokens for 13 messages, out of about 730,000 tokens
 of conversation, three quarters of them tool output.

@@ -113,6 +113,32 @@ class SessionStartTest(Fixture):
                     assistant(text("In ~/.claude/focused, one file per project."))])
         self.new = str(self.transcript.parent / "s2.jsonl")
 
+    def test_after_clear_the_commands_show_the_session_cleared_however_late(self):
+        # As in a cloud session on 2026-11-04: /clear ended s1, and Claude Code wrote the
+        # /clear itself as the new session's first entry, with no origin.
+        self.run_hook("stop", {"session_id": "s1", "transcript_path": str(self.transcript)})
+        self.run_hook("session-end", {"session_id": "s1", "transcript_path": str(self.transcript), "reason": "clear"})
+        self.run_hook("session-start", {"session_id": "s2", "transcript_path": self.new, "source": "clear"})
+        Path(self.new).write_text("\n".join(json.dumps(e) for e in [
+            user("c1", "<command-name>/clear</command-name>\n<command-message>clear</command-message>\n"
+                       "<command-args></command-args>") | {"sessionId": "s2"},
+            user("c2", "<local-command-stdout></local-command-stdout>") | {"sessionId": "s2"}]) + "\n")
+        note = Path(os.environ["FOCUSED_HOME"]) / cli.CLEARED  # SessionEnd's note: five minutes
+        note.write_text(json.dumps(dict(json.loads(note.read_text()), at=0)))
+        with mock.patch.object(cli, "projects_dir", return_value=self.transcript.parent.parent):
+            for command in ("context", "answers"):
+                with redirect_stdout(io.StringIO()) as out:
+                    cli.main(["--in-session", "s2", command])
+                self.assertIn("Where does the index live?", out.getvalue(), command)
+                self.assertNotIn("/clear", out.getvalue(), command)
+            # Without the note the SessionStart hook kept, a session where nothing has been
+            # said yet offers a choice: it doesn't summarize itself.
+            (Path(os.environ["FOCUSED_HOME"]) / "cleared" / "s2").unlink()
+            with redirect_stdout(io.StringIO()) as out:
+                cli.main(["--in-session", "s2", "answers"])
+        self.assertTrue(out.getvalue().startswith("focused: choose a session."))
+        self.assertIn("1. s1 |", out.getvalue())
+
     def test_after_clear_the_new_session_gets_the_cleared_one(self):
         self.run_hook("session-end", {"session_id": "s1", "transcript_path": str(self.transcript), "reason": "clear"})
         code, out = self.run_hook("session-start", {"session_id": "s2", "transcript_path": self.new, "source": "clear"})

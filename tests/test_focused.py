@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import isolate  # noqa: E402,F401  (before any test runs: none reaches a real service)
 
 from focused import cli, store
-from focused.transcript import parse
+from focused.transcript import parse, parse_entries
 
 HUMAN = {"origin": {"kind": "human"}, "turnOrigin": "human"}
 WAKE = {"origin": {"kind": "task-notification"}, "turnOrigin": "task_notification"}
@@ -146,6 +146,24 @@ class ParseTest(Fixture):
         parsed = parse(self.transcript)
         self.assertNotIn("subagent prompt", [t.prompt for t in parsed.turns])
         self.assertLess(parsed.shares["human prompts"], 100)
+
+
+class CommandTest(unittest.TestCase):
+    def test_a_command_claude_never_answers_is_not_a_message(self):
+        parsed = parse_entries([
+            user("c1", "<command-name>/clear</command-name>\n<command-args></command-args>"),  # no origin
+            user("o1", "<local-command-stdout>Cleared</local-command-stdout>"),
+            user("u1", "Where were we?", ts="2026-11-03T06:01:00.000Z", **HUMAN),
+            assistant(text("At the index.")),
+            user("m1", "<command-name>/model</command-name>", **HUMAN),  # answered by Claude Code, not Claude
+            user("w1", "<task-notification>CI green</task-notification>", **WAKE),
+            assistant(text("Nothing to do.")),
+            user("r1", "<command-name>/review</command-name>\n<command-args>7</command-args>", **HUMAN),
+            assistant(text("Reviewed.")),  # a command Claude answers stays a message
+        ])
+        self.assertEqual([(t.key, t.origin, t.parent_key) for t in parsed.turns], [
+            ("c1", "command", None), ("o1", "command", None), ("u1", "human", None),
+            ("m1", "command", "u1"), ("w1", "task-notification", "u1"), ("r1", "human", None)])
 
 
 class StoreTest(Fixture):
@@ -503,7 +521,7 @@ class InSessionTest(Fixture):
         self.transcript.unlink()
         code, out = self.run_cli("--in-session", "nope", "answers")
         self.assertEqual(code, 0)
-        self.assertIn("No indexed sessions", out)
+        self.assertIn("no other session of this project is indexed", out)  # nothing said here, nothing else to offer
         code, out = self.run_cli("--in-session", "nope", "find")
         self.assertEqual(code, 0)
         self.assertIn("Name the words", out)

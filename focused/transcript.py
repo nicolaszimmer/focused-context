@@ -20,6 +20,11 @@ no model is asked anything.
   that turn. A slash command is shown as "/name args".
 - A turn's answer is its last text, provided no tool call came after it.
 - Subagent entries (`isSidechain`) are skipped.
+- A command Claude never answers is not a message: a slash command with no reply and
+  no tool call after it (`/clear`, `/model`, `/cost`: Claude Code runs them itself, and
+  `/clear` is written as the new session's first entry), and the output Claude Code
+  records for such a command (`<local-command-stdout>`). They are filed as "command".
+  A command Claude is about to answer reads as one until its reply is written.
 """
 
 from __future__ import annotations
@@ -268,6 +273,7 @@ def parse_entries(entries: Iterable[dict]) -> Transcript:
                     current.replies.append(block.get("text", ""))
                     current.last = "text"
 
+    _file_commands(turns)
     for turn in turns:
         answer = turn.answer
         if turn.listed:
@@ -277,6 +283,23 @@ def parse_entries(entries: Iterable[dict]) -> Transcript:
         else:
             shares["assistant replies to synthetic turns"] += sum(tokens(t) for t in turn.replies)
     return Transcript(session_id=session_id, turns=turns, shares=shares, title=title, places=places, start=start_cwd)
+
+
+LOCAL_OUTPUT = re.compile(r"\s*<local-command-(stdout|stderr|caveat)>")
+
+
+def _file_commands(turns: list) -> None:
+    """Commands Claude never answered are not messages (see the module's rules); what was
+    filed under one goes under the message before it."""
+    last = None
+    for turn in turns:
+        if (turn.listed and not turn.replies and not turn.tool_calls
+                and (turn.prompt.lstrip().startswith("/") or LOCAL_OUTPUT.match(turn.prompt))):
+            turn.origin = "command"
+        if turn.listed:
+            turn.parent_key, last = None, turn
+        else:
+            turn.parent_key = last.key if last else None
 
 
 def _note_place(places: Counter, cwd: Optional[str], tool_input) -> None:

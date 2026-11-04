@@ -356,7 +356,7 @@ def prune(conn: sqlite3.Connection, now: Optional[datetime] = None) -> int:
     return removed
 
 
-SAVED = (("summaries", ".md"), ("idle", ""))  # files kept per session beside the index
+SAVED = (("summaries", ".md"), ("idle", ""), ("cleared", ""))  # files kept per session beside the index
 
 
 def _prune_files(sessions: list, cutoff: float) -> None:
