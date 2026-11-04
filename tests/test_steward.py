@@ -109,6 +109,13 @@ class StewardTest(unittest.TestCase):
         skill = (ROOT / "skills" / "steward" / "SKILL.md").read_text()
         self.assertIn("disable-model-invocation: true", skill)
         self.assertIn('--in-session "${CLAUDE_SESSION_ID}" steward', skill)
+        # The skill checks the branch against the same characters the command accepts, before
+        # it goes on a command line (rapid-review-bot#482's review).
+        self.assertIn("the branch is made only of `A-Z a-z 0-9 _ . / -`", skill)
+        self.assertEqual(steward.BRANCH.pattern, r"[A-Za-z0-9_./-]{1,200}")
+        for unsafe in ("x'$(id)'", "a;b", "a b", "$HOME", "-x", "a..b"):
+            with self.assertRaises(ValueError):
+                steward.arguments("o", "r", 1, unsafe)
 
 
 if __name__ == "__main__":
