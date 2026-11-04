@@ -33,7 +33,7 @@ from typing import Optional
 
 from . import jev, remote, repos, store
 from .idle import AUTOMATIC
-from .transcript import COMMAND_NAME, HUMAN, prompt_text, provenance, text_of
+from .transcript import COMMAND_ENTRY, COMMAND_NAME, HUMAN, prompt_text, provenance, text_of
 
 MIN_SIMILARITY = 0.6
 ON_DEMAND_MIN = 0.45  # decided on 2026-11-04, from bge-m3's scores: an unrelated part came at 0.43
@@ -84,7 +84,8 @@ def first_message(path) -> bool:
                 if entry.get("type") == "user" and provenance(entry) == HUMAN:
                     # A command is written in Claude Code's markup; a message that starts
                     # with a path is still a message.
-                    if not COMMAND_NAME.search(text_of((entry.get("message") or {}).get("content"))):
+                    raw = text_of((entry.get("message") or {}).get("content"))
+                    if not (COMMAND_ENTRY.match(raw) and COMMAND_NAME.search(raw)):
                         return False
                 elif attachment.get("type") == "queued_command" and provenance(attachment) == HUMAN:
                     # Sent while Claude worked: kept as typed, so a command shows by its "/".

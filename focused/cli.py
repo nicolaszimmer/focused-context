@@ -411,7 +411,8 @@ def cmd_hook_session_start(args) -> int:
                 target = current
             else:
                 target = _previous_session(conn, db, current)
-                if target:
+                if target and target == _cleared(db):
+                    # Kept only when SessionEnd named it: a guess is shown now, never kept.
                     _link_cleared(current, target)
             if not target:
                 return 0

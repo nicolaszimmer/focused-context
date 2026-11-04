@@ -139,6 +139,12 @@ class SessionStartTest(Fixture):
         self.assertTrue(out.getvalue().startswith("focused: choose a session."))
         self.assertIn("1. s1 |", out.getvalue())
 
+    def test_a_guessed_session_is_shown_after_clear_but_never_kept(self):
+        self.run_hook("stop", {"session_id": "s1", "transcript_path": str(self.transcript)})
+        code, out = self.run_hook("session-start", {"session_id": "s2", "transcript_path": self.new, "source": "clear"})
+        self.assertIn("You: Where does the index live?", out)  # no SessionEnd note: the latest, guessed
+        self.assertFalse((Path(os.environ["FOCUSED_HOME"]) / "cleared" / "s2").exists())
+
     def test_after_clear_the_new_session_gets_the_cleared_one(self):
         self.run_hook("session-end", {"session_id": "s1", "transcript_path": str(self.transcript), "reason": "clear"})
         code, out = self.run_hook("session-start", {"session_id": "s2", "transcript_path": self.new, "source": "clear"})

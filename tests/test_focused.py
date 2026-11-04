@@ -161,11 +161,15 @@ class CommandTest(unittest.TestCase):
             user("r1", "<command-name>/review</command-name>\n<command-args>7</command-args>", **HUMAN),
             assistant(text("Reviewed.")),  # a command Claude answers stays a message
             user("p1", "/Users/me/app.py fails on start", **HUMAN),  # a typed message, not yet answered
+            user("q1", "Why does <command-name>/clear</command-name> stay in the index?", **HUMAN),  # quotes it
         ])
         self.assertEqual([(t.key, t.origin, t.parent_key) for t in parsed.turns], [
             ("c1", "command", None), ("o1", "command", None), ("u1", "human", None),
             ("m1", "command", "u1"), ("w1", "task-notification", "u1"), ("r1", "human", None),
-            ("p1", "human", None)])
+            ("p1", "human", None), ("q1", "human", None)])
+        # Claude Code writes the command's message tag first, as often as its name.
+        self.assertEqual(parse_entries([user("c1", "<command-message>clear</command-message>\n"
+                                                   "<command-name>/clear</command-name>")]).turns[0].origin, "command")
 
 
 class StoreTest(Fixture):

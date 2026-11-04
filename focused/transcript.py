@@ -69,6 +69,7 @@ def is_own_command(prompt) -> bool:
     name = re.match(r"\S*", prompt).group()
     return prompt.startswith(PLUGIN_NAMESPACE) or name in REPOSITORY_COMMANDS
 COMMAND_NAME = re.compile(r"<command-name>\s*(.*?)\s*</command-name>", re.S)
+COMMAND_ENTRY = re.compile(r"\s*<command-(name|message|args)>")  # how Claude Code writes a command
 COMMAND_ARGS = re.compile(r"<command-args>\s*(.*?)\s*</command-args>", re.S)
 
 
@@ -252,7 +253,8 @@ def parse_entries(entries: Iterable[dict]) -> Transcript:
             bucket = {HUMAN: "human prompts", UNKNOWN: "prompts of unknown origin", SDK: "human prompts"}.get(
                 origin, "synthetic prompts (wake-ups, notifications, hook feedback)")
             shares[bucket] += tokens(prompt)
-            start(entry, origin, prompt_text(prompt), command=bool(COMMAND_NAME.search(prompt)))
+            start(entry, origin, prompt_text(prompt),
+                  command=bool(COMMAND_ENTRY.match(prompt) and COMMAND_NAME.search(prompt)))
 
         elif kind == "assistant":
             for block in content or []:
