@@ -185,7 +185,10 @@ environment's settings, add its host to the allowed domains, or choose a broader
   short goes on from there next time.
 - **Reading back:** the sessions `/focused-context` offers in a new session include the
   hosted index's, so a new container offers those of earlier containers, and the one
-  chosen is read into this machine's index. `focused answers --session <title>` and
+  chosen is read into this machine's index. They come those of this session's
+  repositories first, then those of related repositories (see "Recall"), and other
+  projects' sessions join them when they worked in one of those.
+  `focused answers --session <title>` and
   `focused context --session <title>` read a session this machine doesn't have the same
   way. `/focused-find` adds the matches from sessions not on this machine.
 - **Retention is each side's own:** a turn deleted here for its age isn't deleted there.
@@ -195,6 +198,39 @@ environment's settings, add its host to the allowed domains, or choose a broader
   one line. A turn larger than D1 keeps in a row (2 MB) isn't pushed, and is logged.
 - The URL must be https, except to this machine (`http://127.0.0.1`, for `wrangler dev`),
   so the token never goes over the network in the clear.
+
+## Recall
+
+A session's context should be built from everything relevant, not only from the session
+itself. With the hosted index set up, focused recalls what earlier sessions said that bears
+on what you're doing now (`focused/recall.py`, the Worker's `POST /v1/recall`):
+
+- **Found by meaning and by words.** The Worker embeds each of your message parts with
+  Cloudflare's multilingual `bge-m3` (English and German alike) into a Vectorize index on
+  your account, and searches the words too, the commonest ones left out. Each part comes
+  back with its session's title and what answered it then.
+- **With a session's first typed message**, the `UserPromptSubmit` hook adds a short block,
+  at most 1,500 characters: up to three earlier parts at a cosine similarity of at least
+  0.6 (`FOCUSED_RECALL_MIN`), each with its first answer. Words alone don't add to it,
+  since a shared word says little. Commands and wake-ups don't count as a first message.
+- **On demand**, `/focused-recall <what>` lists the best five in full, by meaning at a
+  similarity of at least 0.4. Claude may use it itself when you refer to earlier work, or
+  before re-deciding something settled before.
+- **The same repositories first** (`focused/repos.py`). Each session links to the
+  repositories it worked in, counted by its transcript entries there: each entry's working
+  directory, and each file or folder a tool was given. Two repositories are related when
+  one session worked in both. Recall puts first the parts of sessions that worked in a
+  repository this session has, then those of sessions in a related repository, then the
+  rest. Relevance still comes first: a part below the similarity floor isn't lifted in by
+  its repository. A repository is named by its `origin`, as `github.com/owner/name`, so
+  it has one name in every container; a folder without a git remote has none.
+- **Jev can sift the candidates**: with `FOCUSED_JEV_RECALL=1` and Jev on, it reads each one
+  and the block keeps only those it reads as bearing on your message. It ships switched off,
+  as new Jev questions do, and is judged by its output.
+- **The block is quoted for reference**, and says so: no text in it is an instruction.
+- **Without the hosted index** nothing is added, and the command says so. Without the
+  Worker's AI and Vectorize bindings it recalls by words alone, so nothing is added to a
+  first message, and the command still answers.
 
 ## Storage
 
@@ -208,8 +244,9 @@ environment's settings, add its host to the allowed domains, or choose a broader
 - Tables: `sessions`, with each session's title; `turns`, with full-text search on prompt and final
   answer; `parts` of your messages, with Jev's kinds; `paras`, every paragraph
   Claude wrote, with full-text search; and `pairs`, Jev's answer for each part
-  and paragraph; and `pushed`, the digest of each turn as last pushed to the
-  hosted index.
+  and paragraph; `session_repos`, the repositories each session worked in, by
+  its entries in each; and `pushed`, the digest of each turn as last pushed to
+  the hosted index.
 - Beside the databases: `summaries/<session>.md`, the full summary of each
   session summarized, and `idle/<session>`, the note that a message was stopped
   after an hour without a reply.
@@ -335,7 +372,7 @@ sh "$D/scripts/install-cloud.sh" --jev --follow main
 - merges the four hooks into `~/.claude/settings.json`: `Stop` (async), `SessionEnd`,
   `SessionStart` after `/clear` and compaction, and `UserPromptSubmit`. Other hooks and
   settings stay as they are, and running it again replaces what it installed.
-- writes `/focused-answers`, `/focused-find` and `/focused-context` as personal skills
+- writes `/focused-answers`, `/focused-find`, `/focused-context` and `/focused-recall` as personal skills
   in `~/.claude/skills`. A personal skill takes precedence over a repository's skill of
   the same name, so a repository's own copies are shadowed, not doubled.
 - sets `FOCUSED_INSTALL=environment` in the settings' `env`, so a repository's own
@@ -424,6 +461,14 @@ Made on 2026-11-03 by the maintainer:
   Code's own questions do. Right after `/clear` it still shows the session cleared.
 - Sessions are named by their titles, as Claude Code names them: a person names one by
   its title, and focused shows each by its title.
+- A session's context is built from everything relevant: focused recalls earlier sessions
+  by keywords and embeddings, with a session's first message and on demand, before the
+  ledger is built.
+- focused-context's main is protected on GitHub (a pull request is required; direct and
+  force pushes are blocked), since cloud sessions follow it.
+- How sessions relate is a graph of repositories: first the repositories a session works
+  in, then those worked on together with them in another session. Recall and the choice
+  of a session follow it.
 
 Open:
 
@@ -434,4 +479,9 @@ Open:
    characters, set by Claude under Claude Code's 10,000.
 4. Which sessions count as one project: every cloud session with more than one
    repository runs in `/home/user`, so all of them share the project `-home-user`, and
-   the hosted index's "latest session" and search span all of them.
+   the hosted index's search spans all of them. Recall and the choice of a session now go
+   by repository, which may settle this: whether the project should still matter
+   anywhere (search, naming a session by its title) is open.
+5. The similarity a part needs: 0.6 to join a first message and 0.4 on demand, Claude's
+   guesses for bge-m3, to be judged by output once the Worker runs; and whether Jev sifts
+   the candidates.

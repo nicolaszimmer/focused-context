@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from . import jev
+from . import jev, repos
 from .parts import message_parts, paragraphs, place
 from .transcript import LISTED, Transcript, is_own_command, parse
 
@@ -105,6 +105,14 @@ CREATE TRIGGER IF NOT EXISTS paras_au AFTER UPDATE ON paras BEGIN
     INSERT INTO paras_fts (paras_fts, rowid, text) VALUES ('delete', old.id, old.text);
     INSERT INTO paras_fts (rowid, text) VALUES (new.id, new.text);
 END;
+-- The repositories a session worked in (focused/repos.py), by its transcript entries in
+-- each; one it started with but didn't work in has 0.
+CREATE TABLE IF NOT EXISTS session_repos (
+    session_id TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    entries INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (session_id, repo)
+);
 -- What the hosted index holds (focused/remote.py): each turn's digest as last pushed.
 CREATE TABLE IF NOT EXISTS pushed (
     session_id TEXT NOT NULL,
@@ -203,6 +211,9 @@ def index_transcript(conn: sqlite3.Connection, path, stop_message: Optional[str]
     """Upsert every turn of a transcript. Running it twice changes nothing."""
     parsed = parse(path)
     session_id = parsed.session_id or Path(path).stem
+    # Before the transaction: finding the repositories runs git, which mustn't hold the
+    # index's write lock.
+    worked_in = repos.of_session(parsed.places, parsed.start)
     with conn:
         for turn in parsed.turns:
             conn.execute(UPSERT, {
@@ -250,6 +261,12 @@ def index_transcript(conn: sqlite3.Connection, path, stop_message: Optional[str]
             "first_at = excluded.first_at, last_at = excluded.last_at, "
             "title = COALESCE(excluded.title, sessions.title)",
             (session_id, str(path), min(stamps, default=None), max(stamps, default=None), parsed.title))
+        # A count only grows: a later read in a container where a repository's folder is
+        # gone finds fewer of its entries, not fewer entries.
+        conn.executemany(
+            "INSERT INTO session_repos (session_id, repo, entries) VALUES (?, ?, ?) "
+            "ON CONFLICT (session_id, repo) DO UPDATE SET entries = MAX(session_repos.entries, excluded.entries)",
+            [(session_id, repo, entries) for repo, entries in worked_in])
         prune(conn, now=now)
     return parsed
 
@@ -325,6 +342,7 @@ def prune(conn: sqlite3.Connection, now: Optional[datetime] = None) -> int:
     gone = [row[0] for row in conn.execute(
         "SELECT session_id FROM sessions WHERE session_id NOT IN (SELECT DISTINCT session_id FROM turns)")]
     conn.execute("DELETE FROM sessions WHERE session_id NOT IN (SELECT DISTINCT session_id FROM turns)")
+    conn.execute("DELETE FROM session_repos WHERE session_id NOT IN (SELECT session_id FROM sessions)")
     if removed:
         _drop_orphans(conn)
     _prune_files(gone, cutoff.timestamp())
@@ -457,6 +475,14 @@ def name(session_id: str, title: Optional[str]) -> str:
 def session_name(conn: sqlite3.Connection, session_id: str) -> str:
     row = conn.execute("SELECT title FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
     return name(session_id, row[0] if row else None)
+
+
+def session_repos(conn: sqlite3.Connection, session_id: str, worked: bool = False) -> list:
+    """A session's repositories as [{"repo", "entries"}], most used first; with `worked`, only
+    those it worked in."""
+    return [{"repo": row[0], "entries": row[1]} for row in conn.execute(
+        "SELECT repo, entries FROM session_repos WHERE session_id = ? AND entries >= ? ORDER BY entries DESC, repo",
+        (session_id, 1 if worked else 0))]
 
 
 def latest_session(conn: sqlite3.Connection) -> Optional[str]:

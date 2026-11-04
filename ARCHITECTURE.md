@@ -38,10 +38,13 @@ any cloud session, iPhone or Mac                      (installed per environment
   hooks (code): Stop, SessionEnd, SessionStart, UserPromptSubmit
    ├─ index each turn ──────────────▶ local index (SQLite, ~/.claude/focused)
    │    split messages into parts;        sessions · turns · parts · paragraphs ·
-   │    Jev: what each part does,         Jev's readings · titles
+   │    Jev: what each part does,         Jev's readings · titles · repositories
    │    which paragraphs answer it
    ├─ push what changed ────────────▶ hosted index: focused-context-worker
-   │                                   (Cloudflare Worker + D1, the maintainer's account)
+   │    with the session's            (Cloudflare Worker + D1 + Vectorize,
+   │    repositories                   the maintainer's account)
+   ├─ first typed message ──────────▶ recall: what earlier sessions said about it,
+   │                                  same repositories first, then related ones
    ├─ after /clear, compaction ─────▶ summary of where the session left off
    ├─ after an hour idle ───────────▶ stop one typed message: "run /clear or send again"
    └─ /focused-context in a new session ─▶ choose a session by title; read it back
@@ -56,13 +59,15 @@ planned
 |---|---|---|---|
 | **Capture** | The hooks index each turn: the person's message split into its parts, every paragraph Claude wrote, wake-ups filed under the message they follow, files, commits and PRs. | `focused/transcript.py`, `parts.py`, `store.py`; hooks in `hooks/hooks.json` | Built (0.1–0.3) |
 | **Install** | Puts the hooks and the three commands into every session of a cloud environment from its setup script; locally, the plugin does it. | `scripts/install-cloud.sh`, `focused/install.py` | Built (0.5) |
-| **Updates** | The setup script runs about once a week, so a `SessionStart` hook checks focused-context's main as each session starts and installs a newer version itself: a merge to main is a release. | `focused/update.py` | Built, in review (#9) |
+| **Updates** | The setup script runs about once a week, so a `SessionStart` hook checks focused-context's main as each session starts and installs a newer version itself: a merge to main is a release. | `focused/update.py` | Built (0.7) |
 | **Extraction** | Jev, TypeSafe's decision model through OpenRouter, reads each turn at indexing time: what each part of a message does, and which paragraphs answer it. Answers are kept with a digest of the question's wording. | `focused/jev.py` | Built (0.3), on for the maintainer |
 | **Local index** | One SQLite database per project, readable by its owner only, pruned after 30 days. | `focused/store.py` | Built |
 | **Restore** | After `/clear` and compaction, the `SessionStart` hook loads a summary of the session: decisions, open asks, files and PRs, and the latest messages with their answers, under 9,500 characters. The whole summary is kept in a file. | `focused/summary.py` | Built (0.4) |
 | **Idle stop** | After 59 minutes without a reply, in a session of 100,000 tokens or more, the first typed message is stopped once, since it would resend the whole session without the prompt cache. | `focused/idle.py` | Built (0.4) |
 | **Hosted index** | The hooks push the turns that changed to a Worker on the maintainer's Cloudflare account. Any later session reads them back and searches them, so the index outlives the container. | `focused/remote.py`; [focused-context-worker](https://github.com/nicolaszimmer/focused-context-worker) | Built (0.6; focused-context-worker merged), not yet deployed |
-| **Choosing a session** | In a session where nothing has been said yet, `/focused-context` offers the project's three latest sessions by title, with a field for any other. Sessions are named by their titles everywhere. | `focused/cli.py`, `skills/context` | Built (0.6) |
+| **Choosing a session** | In a session where nothing has been said yet, `/focused-context` offers three earlier sessions by title, with a field for any other: those of this session's repositories first, then those of related repositories, then the latest. Sessions are named by their titles everywhere. | `focused/cli.py`, `skills/context` | Built (0.6) |
+| **Recall** | What earlier sessions said that bears on what the person does now, found by meaning (Workers AI's bge-m3 embeddings of each message part, in Vectorize) and by words, each with what answered it. A short block joins a session's first typed message; `/focused-recall` gives more, and Claude may use it itself. Jev can sift the candidates, switched off for now. | `focused/recall.py`; the Worker's `src/recall.ts` | Built, in review |
+| **Repository graph** | How sessions relate. Each session links to the repositories it worked in, weighted by its transcript entries there (working directories, and the files and folders tools were given); repositories are related when one session worked in both. Recall and the choice of a session go to the same repositories first, then to related ones, among what is relevant. Repositories are named by their `origin`, the same in every container. | `focused/repos.py`; the Worker's `session_repos` | Built, in review |
 | **Ledger** | Three more Jev questions about Claude's paragraphs: does it ask the person to decide, does it report a checked result, does it commit Claude to doing something. Later messages are paired against those asks, the way answers are paired today, so an ask closes when it is settled. The ledger collects what is waiting on the person, the to-dos, the findings and the PRs across sessions. | to be built | Planned |
 | **View page** | A page served by the Worker that shows the ledger. A decision answered there is written to it. | to be built | Planned |
 | **Restore from the ledger** | The summary's decisions and open items come from the ledger, which spans every session and device, not one transcript. | to be built | Planned |
@@ -107,8 +112,11 @@ repository per working session. What was built differs:
 1. **Hosted index and restore.** Built and merged: the client (0.6) and the Worker. Done when a cloud session on the iPhone and one on the Mac reach the same
    sessions. That needs the Worker deployed and the environment set up (README, "The
    hosted index").
-2. **Ledger and view page.** The three new Jev questions, then the page.
-3. **Triage and steward sessions.** Done when working sessions get no PR wake-ups.
+2. **Recall** (decided on 2026-11-03, before the ledger). Built and in review. Done when a new
+   session's first message brings what earlier sessions said about it.
+3. **Ledger and view page.** The three new Jev questions, then the page. Ledger items join
+   recall.
+4. **Triage and steward sessions.** Done when working sessions get no PR wake-ups.
 
 ## Decisions
 
@@ -125,6 +133,12 @@ Made by the maintainer on 2026-11-03:
   repository; the new Jev questions ship switched off and are judged by their output.
 - `/focused-context` in a new session offers a choice of sessions instead of loading the
   latest, and sessions are named by their titles.
+- Cloud sessions follow `main`, and `main` is protected on GitHub: only a merged pull
+  request reaches them.
+- Context is built from every relevant data point: recall across sessions by keywords and
+  embeddings, with a session's first message and on demand, before the ledger.
+- How the data relates is a graph: primarily the repositories a session uses, then
+  repositories that were used together in one session before.
 
 Open:
 
@@ -133,5 +147,10 @@ Open:
 2. Retention: 30 days, locally and hosted; and whether a turn with no timestamp should
    ever expire (none has been seen).
 3. Project grouping: every cloud session with more than one repository runs in
-   `/home/user`, so all of them are one project, `-home-user`.
+   `/home/user`, so all of them are one project, `-home-user`. Recall and the choice of a
+   session now follow the repository graph instead, which may settle this; whether the
+   project should still matter anywhere (search, naming a session by title) is open.
 4. The idle stop's minimum, 100,000 tokens, and the summary's limit, 9,500 characters.
+5. Recall's similarity floors (0.6 for a first message, 0.4 on demand, guesses for
+   bge-m3), whether Jev sifts its candidates,
+   and Workers Free (about 4,900 parts) or Paid (about 9,700) for the vectors.

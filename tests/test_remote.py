@@ -36,6 +36,8 @@ class FakeWorker:
         self.fail: list = []  # statuses to answer the next requests with
         self.redirect = None  # a URL to send every request on to
         self.raw: list = []  # (body, declared length) to answer the next requests with, as they are
+        self.recall_items: list = []  # what POST /v1/recall answers
+        self.recalls: list = []  # the bodies it was sent
         worker = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -55,6 +57,9 @@ class FakeWorker:
 
             def do_PUT(self):
                 self.handle_any("PUT")
+
+            def do_POST(self):
+                self.handle_any("POST")
 
             def handle_any(self, method):
                 length = int(self.headers.get("content-length") or 0)
@@ -81,6 +86,9 @@ class FakeWorker:
                     return
                 url = urllib.parse.urlsplit(self.path)
                 query = dict(urllib.parse.parse_qsl(url.query))
+                if url.path == "/v1/recall" and method == "POST":
+                    worker.recalls.append(json.loads(body))
+                    return self.reply(200, {"items": worker.recall_items, "vectors": True})
                 if url.path.startswith("/v1/sessions/"):
                     session = urllib.parse.unquote(url.path.rsplit("/", 1)[1])
                     if method == "PUT":
@@ -115,6 +123,8 @@ class FakeWorker:
             held[table] += body.get(table, [])
         held.update(project=body["project"], first_at=body["first_at"], last_at=body["last_at"],
                     title=body.get("title") or held.get("title"))
+        if body.get("repos") is not None:  # named: replaced; not named: kept
+            held["repos"] = body["repos"]
         if not held["turns"]:
             del self.sessions[session]
         return {"turns": len(body.get("turns", [])), "gone": len(body.get("gone", []))}
@@ -126,7 +136,8 @@ class FakeWorker:
                     if t["origin"] in LISTED and not is_own_command(t["prompt"])]
         return {"session_id": session, "project": held["project"], "first_at": held["first_at"],
                 "last_at": held["last_at"], "title": held.get("title"), "turns": len(held["turns"]),
-                "messages": len(messages), "first_prompt": messages[0]["prompt"] if messages else None}
+                "messages": len(messages), "first_prompt": messages[0]["prompt"] if messages else None,
+                "repos": [r["repo"] for r in held.get("repos", []) if r["entries"] > 0]}
 
     def search(self, words, project):
         def matches(*texts):
@@ -372,7 +383,7 @@ class HostedCliTest(RemoteFixture):
             code, out = self.run_cli("--in-session", "s2", "context")
             self.assertEqual(code, 0)
             self.assertIn("focused: choose a session.", out)  # not loaded on a guess
-            self.assertIn("1. s1 | Hooks and answers | 2026-11-03 06:12 | 3 messages | How do hooks work? Second line", out)
+            self.assertIn("1. s1 | Hooks and answers | 2026-11-03 06:12 | 3 messages | - | How do hooks work? Second line", out)
             self.assertNotIn("Summary of session", out)
             code, out = self.run_cli("--in-session", "s2", "context", "--session", "s1")
         self.assertIn("Summary of “Hooks and answers” (s1)", out)

@@ -294,9 +294,9 @@ class ChooseTest(Fixture):
         lines = out.splitlines()
         self.assertTrue(lines[0].startswith("focused: choose a session."))
         self.assertEqual(lines[1:], [
-            "1. s5 | Worker deploy with a much longer title than fits | 2026-11-03 06:40 | 1 message | Deploy the Worker.",
-            "2. s4 | Merge / the PR | 2026-11-03 06:30 | 1 message | Merge it.",
-            "3. s3 | (no title) | 2026-11-03 06:21 | 1 message | Where / is the retry?",
+            "1. s5 | Worker deploy with a much longer title than fits | 2026-11-03 06:40 | 1 message | - | Deploy the Worker.",
+            "2. s4 | Merge / the PR | 2026-11-03 06:30 | 1 message | - | Merge it.",
+            "3. s3 | (no title) | 2026-11-03 06:21 | 1 message | - | Where / is the retry?",
         ])
         code, out = self.context("--session", "s1")
         self.assertIn("Summary of “Hooks and the index” (s1)", out)
@@ -336,8 +336,8 @@ class ChooseTest(Fixture):
         code, out = self.context("--session", "abcdefgh")
         self.assertEqual(out.splitlines(), [  # offered as a choice, as in a new session
             "focused: choose a session. 2 sessions match “abcdefgh”. The latest:",
-            "1. abcdefgh-two | (no title) | 2026-11-03 06:10 | 1 message | Merge it.",
-            "2. abcdefgh-one | (no title) | 2026-11-03 06:00 | 1 message | How do hooks work?",
+            "1. abcdefgh-two | (no title) | 2026-11-03 06:10 | 1 message | - | Merge it.",
+            "2. abcdefgh-one | (no title) | 2026-11-03 06:00 | 1 message | - | How do hooks work?",
         ])
 
     def test_a_session_is_named_by_its_title_or_words_of_it(self):

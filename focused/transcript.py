@@ -25,6 +25,7 @@ no model is asked anything.
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -51,7 +52,7 @@ LISTED = (HUMAN, UNKNOWN, SDK)  # turns a person may have started
 # /focused-review stays). Their answers are copies of other answers, so lists and searches
 # leave them out.
 PLUGIN_NAMESPACE = "/focused:"
-REPOSITORY_COMMANDS = ("/focused-answers", "/focused-find", "/focused-context")
+REPOSITORY_COMMANDS = ("/focused-answers", "/focused-find", "/focused-context", "/focused-recall")
 
 
 def is_own_command(prompt) -> bool:
@@ -142,6 +143,8 @@ class Transcript:
     turns: list
     shares: Counter
     title: Optional[str] = None  # the session's title as Claude Code names it (its latest ai-title)
+    places: Counter = field(default_factory=Counter)  # each working directory and tool path: its entries
+    start: Optional[str] = None  # the working directory the session started in
 
 
 def load(path) -> Iterator[dict]:
@@ -168,6 +171,8 @@ def parse_entries(entries: Iterable[dict]) -> Transcript:
     tools: dict = {}
     session_id = None
     title = None
+    places: Counter = Counter()
+    start_cwd = None
     current: Optional[Turn] = None
     last_listed: Optional[Turn] = None
 
@@ -192,6 +197,10 @@ def parse_entries(entries: Iterable[dict]) -> Transcript:
         if entry.get("isSidechain"):
             continue
         session_id = session_id or entry.get("sessionId")
+        cwd = entry.get("cwd") if isinstance(entry.get("cwd"), str) else None
+        if cwd:
+            places[cwd] += 1
+            start_cwd = start_cwd or cwd
         kind = entry.get("type")
         if kind == "ai-title":
             title = str(entry.get("aiTitle") or "").strip() or title
@@ -243,6 +252,7 @@ def parse_entries(entries: Iterable[dict]) -> Transcript:
                 elif btype == "tool_use":
                     shares["assistant tool calls"] += tokens(block.get("input"))
                     tools[block.get("id")] = (block.get("name", ""), block.get("input") or {})
+                    _note_place(places, cwd, block.get("input"))
                     if current is not None:
                         current.tool_calls += 1
                         current.last = "tool_use"
@@ -264,7 +274,23 @@ def parse_entries(entries: Iterable[dict]) -> Transcript:
             shares["assistant narration (text before the answer)"] += sum(tokens(t) for t in turn.narration)
         else:
             shares["assistant replies to synthetic turns"] += sum(tokens(t) for t in turn.replies)
-    return Transcript(session_id=session_id, turns=turns, shares=shares, title=title)
+    return Transcript(session_id=session_id, turns=turns, shares=shares, title=title, places=places, start=start_cwd)
+
+
+def _note_place(places: Counter, cwd: Optional[str], tool_input) -> None:
+    """The file or folder a tool was given counts for where the session worked
+    (focused/repos.py); a relative one is taken from the entry's working directory."""
+    if not isinstance(tool_input, dict):
+        return
+    path = next((v for v in (tool_input.get(k) for k in ("file_path", "notebook_path", "path"))
+                 if isinstance(v, str) and v.strip()), None)
+    if path is None:
+        return
+    if not os.path.isabs(path):
+        if not cwd:
+            return
+        path = os.path.join(cwd, path)
+    places[os.path.normpath(path)] += 1
 
 
 def _note_result(turn: Turn, tool, content) -> None:

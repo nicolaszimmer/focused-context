@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Optional
 
 MARK = "# focused-install"
-SKILLS = ("answers", "find", "context")
+SKILLS = ("answers", "find", "context", "recall")
 SKILL_MARK = ".focused-install"
 ENV_MARK = ("FOCUSED_INSTALL", "environment")
 # The checkout path goes into shell commands and skills between double quotes, so it may
