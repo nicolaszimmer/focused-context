@@ -20,7 +20,8 @@ no model is asked anything.
   that turn. A slash command is shown as "/name args".
 - A turn's answer is its last text, provided no tool call came after it.
 - Subagent entries (`isSidechain`) are skipped.
-- A command Claude never answers is not a message: a slash command with no reply and
+- A command Claude never answers is not a message: a slash command (Claude Code's
+  `<command-name>` markup, not a message that merely starts with "/") with no reply and
   no tool call after it (`/clear`, `/model`, `/cost`: Claude Code runs them itself, and
   `/clear` is written as the new session's first entry), and the output Claude Code
   records for such a command (`<local-command-stdout>`). They are filed as "command".
@@ -125,6 +126,7 @@ class Turn:
     files: list = field(default_factory=list)
     commits: list = field(default_factory=list)
     pull_requests: list = field(default_factory=list)
+    command: bool = False  # written as a slash command (Claude Code's <command-name> markup)
 
     @property
     def listed(self) -> bool:
@@ -183,7 +185,7 @@ def parse_entries(entries: Iterable[dict]) -> Transcript:
     current: Optional[Turn] = None
     last_listed: Optional[Turn] = None
 
-    def start(entry: dict, origin: str, prompt: str) -> Turn:
+    def start(entry: dict, origin: str, prompt: str, command: bool = False) -> Turn:
         nonlocal current, last_listed
         turn = Turn(
             key=entry.get("uuid") or f"seq-{len(turns)}",
@@ -191,6 +193,7 @@ def parse_entries(entries: Iterable[dict]) -> Transcript:
             origin=origin,
             started_at=entry.get("timestamp"),
             prompt=prompt,
+            command=command,
         )
         if not turn.listed and last_listed is not None:
             turn.parent_key = last_listed.key
@@ -249,7 +252,7 @@ def parse_entries(entries: Iterable[dict]) -> Transcript:
             bucket = {HUMAN: "human prompts", UNKNOWN: "prompts of unknown origin", SDK: "human prompts"}.get(
                 origin, "synthetic prompts (wake-ups, notifications, hook feedback)")
             shares[bucket] += tokens(prompt)
-            start(entry, origin, prompt_text(prompt))
+            start(entry, origin, prompt_text(prompt), command=bool(COMMAND_NAME.search(prompt)))
 
         elif kind == "assistant":
             for block in content or []:
@@ -293,8 +296,10 @@ def _file_commands(turns: list) -> None:
     filed under one goes under the message before it."""
     last = None
     for turn in turns:
+        # Only what Claude Code wrote as a command: a typed message that starts with a path
+        # ("/Users/me/app.py fails") stays a message, answered or not.
         if (turn.listed and not turn.replies and not turn.tool_calls
-                and (turn.prompt.lstrip().startswith("/") or LOCAL_OUTPUT.match(turn.prompt))):
+                and (turn.command or LOCAL_OUTPUT.match(turn.prompt))):
             turn.origin = "command"
         if turn.listed:
             turn.parent_key, last = None, turn

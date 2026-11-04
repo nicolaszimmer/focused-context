@@ -160,10 +160,12 @@ class CommandTest(unittest.TestCase):
             assistant(text("Nothing to do.")),
             user("r1", "<command-name>/review</command-name>\n<command-args>7</command-args>", **HUMAN),
             assistant(text("Reviewed.")),  # a command Claude answers stays a message
+            user("p1", "/Users/me/app.py fails on start", **HUMAN),  # a typed message, not yet answered
         ])
         self.assertEqual([(t.key, t.origin, t.parent_key) for t in parsed.turns], [
             ("c1", "command", None), ("o1", "command", None), ("u1", "human", None),
-            ("m1", "command", "u1"), ("w1", "task-notification", "u1"), ("r1", "human", None)])
+            ("m1", "command", "u1"), ("w1", "task-notification", "u1"), ("r1", "human", None),
+            ("p1", "human", None)])
 
 
 class StoreTest(Fixture):

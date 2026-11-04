@@ -147,6 +147,9 @@ class RecallTest(RemoteFixture):
                                                   "origin": {"kind": "human"}}}]) + "\n")
         self.assertTrue(recall.first_message(self.fresh))
         self.assertIn("Is the Worker deployed", self.prompt("Where does the hosted index live now?"))
+        # A typed message that starts with a path is a message.
+        self.fresh.write_text(json.dumps(user("p1", "/Users/me/app.py fails on start", **HUMAN) | {"sessionId": "s2"}) + "\n")
+        self.assertFalse(recall.first_message(self.fresh))
 
     def test_words_alone_never_join_a_first_message_whatever_the_floor(self):
         self.worker.recall_items = [dict(item("Found by its words", None), via=["words"])]
