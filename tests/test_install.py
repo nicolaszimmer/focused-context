@@ -10,6 +10,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import isolate  # noqa: E402,F401  (before any test runs: none reaches a real service)
+
 from test_focused import SESSION  # noqa: E402
 
 from focused import install  # noqa: E402
@@ -75,6 +77,8 @@ class InstallTest(unittest.TestCase):
         stops = [c for c in self.commands("Stop") if install.MARK in c]
         self.assertEqual(len(stops), 1)
         self.assertTrue(stops[0].startswith("FOCUSED_JEV=1 "))
+        # The first message's recall: Jev sifts it (decided on 2026-11-04).
+        self.assertTrue(all(c.startswith("FOCUSED_JEV=1 ") for c in self.commands("UserPromptSubmit") if install.MARK in c))
         self.assertFalse(any(c.startswith("FOCUSED_JEV=1") for c in self.commands("SessionEnd")))
         other = ROOT / "tests"  # not a checkout: refused, and nothing is changed
         with self.assertRaises(ValueError):

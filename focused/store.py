@@ -149,6 +149,7 @@ WHERE turns.prompt IS NOT excluded.prompt
    OR turns.pull_requests IS NOT excluded.pull_requests
    OR turns.seq IS NOT excluded.seq
    OR turns.parent_key IS NOT excluded.parent_key
+   OR turns.origin IS NOT excluded.origin
 """
 
 
@@ -279,6 +280,12 @@ def _index_parts(conn: sqlite3.Connection, session_id: str, parsed: Transcript) 
     for turn in parsed.turns:
         if turn.parent_key:
             under.setdefault(turn.parent_key, []).append(turn)
+    # A turn that isn't a person's message (a rule changed how it is read, as for a
+    # compaction's summary in 0.8.1) keeps no parts, answers or paragraphs of its own: its
+    # paragraphs are filed under the message it follows.
+    unlisted = [(session_id, t.key) for t in parsed.turns if t.origin not in LISTED or is_own_command(t.prompt)]
+    for table in ("pairs", "parts", "paras"):
+        conn.executemany(f"DELETE FROM {table} WHERE session_id = ? AND turn_key = ?", unlisted)
     for turn in parsed.turns:
         if turn.origin not in LISTED or is_own_command(turn.prompt):
             continue
@@ -349,7 +356,7 @@ def prune(conn: sqlite3.Connection, now: Optional[datetime] = None) -> int:
     return removed
 
 
-SAVED = (("summaries", ".md"), ("idle", ""))  # files kept per session beside the index
+SAVED = (("summaries", ".md"), ("idle", ""), ("cleared", ""))  # files kept per session beside the index
 
 
 def _prune_files(sessions: list, cutoff: float) -> None:

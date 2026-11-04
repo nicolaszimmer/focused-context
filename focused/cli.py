@@ -311,10 +311,35 @@ def _cleared(db: Path) -> Optional[str]:
     return note.get("session") if fresh and note.get("db") == str(db) else None
 
 
+def _cleared_file(session: str) -> Path:
+    """Where the session a /clear started notes the session it ended: cleared/<session>,
+    named like a summary file, so only a plain session id names one."""
+    return _summary_file(session).parent.parent / "cleared" / session
+
+
+def _link_cleared(current: Optional[str], ended: str) -> None:
+    """The SessionStart hook after /clear: this session continues `ended`. Kept, unlike
+    SessionEnd's note, which holds for five minutes, so a command run later in a session
+    where nothing has been said yet still finds the session it continues."""
+    try:
+        if current and current != ended:
+            _write_private(_cleared_file(current), ended)
+    except (OSError, ValueError):
+        _log("note the session /clear ended")
+
+
+def _continues(current: Optional[str]) -> Optional[str]:
+    try:
+        return _cleared_file(current).read_text().strip() or None if current else None
+    except (OSError, ValueError):
+        return None
+
+
 def _previous_session(conn, db: Path, current: Optional[str], guess: bool = True) -> Optional[str]:
-    """The session /clear just ended (its SessionEnd note), else, with `guess`, the
-    project's most recent other session on this machine; re-read so its last turns are in."""
-    target = _cleared(db)
+    """The session /clear ended, as the session it started noted it, or as SessionEnd's
+    note says; else, with `guess`, the project's most recent other session on this machine;
+    re-read so its last turns are in."""
+    target = _continues(current) or _cleared(db)
     if target is None and guess:
         target = next((row[0] for row in conn.execute(
             "SELECT session_id FROM sessions WHERE session_id IS NOT ? ORDER BY last_at DESC LIMIT 1",
@@ -386,6 +411,9 @@ def cmd_hook_session_start(args) -> int:
                 target = current
             else:
                 target = _previous_session(conn, db, current)
+                if target and target == _cleared(db):
+                    # Kept only when SessionEnd named it: a guess is shown now, never kept.
+                    _link_cleared(current, target)
             if not target:
                 return 0
             full_path = _summary_file(target)
@@ -419,7 +447,8 @@ def cmd_hook_prompt(args) -> int:
             return 0
         # Nothing has been done in the session yet: its repositories are those it starts with.
         mine = repos.attached(payload.get("cwd") or _here())
-        items = recall.related(prompt, exclude=payload.get("session_id"), mine=mine)
+        items = recall.related(prompt, exclude=payload.get("session_id"), mine=mine,
+                               log=lambda error: _log("recall: jev", error))
         if items:
             sys.stdout.write(json.dumps({"hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit", "additionalContext": recall.block(items, mine)}}))
@@ -523,6 +552,14 @@ def cmd_answers(args) -> int:
         if args.session is None:  # several matched, and are listed
             return 0
     with closing(store.connect(_with_session(args, db, args.session))) as conn:
+        if args.in_session and not args.session and not any(
+                is_question(r) for r in store.session_turns(conn, args.in_session)):
+            # Nothing said in this session yet: after /clear, the session it ended;
+            # otherwise a choice, as /focused-context offers one.
+            previous = _previous_session(conn, db, args.in_session, guess=False)
+            if not previous:
+                return _choose(conn, db, args.in_session)
+            args.session = previous
         return _answers(args, conn)
 
 

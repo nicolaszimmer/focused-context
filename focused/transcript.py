@@ -20,6 +20,12 @@ no model is asked anything.
   that turn. A slash command is shown as "/name args".
 - A turn's answer is its last text, provided no tool call came after it.
 - Subagent entries (`isSidechain`) are skipped.
+- A command Claude never answers is not a message: a slash command (Claude Code's
+  `<command-name>` markup, not a message that merely starts with "/") with no reply and
+  no tool call after it (`/clear`, `/model`, `/cost`: Claude Code runs them itself, and
+  `/clear` is written as the new session's first entry), and the output Claude Code
+  records for such a command (`<local-command-stdout>`). They are filed as "command".
+  A command Claude is about to answer reads as one until its reply is written.
 """
 
 from __future__ import annotations
@@ -63,6 +69,7 @@ def is_own_command(prompt) -> bool:
     name = re.match(r"\S*", prompt).group()
     return prompt.startswith(PLUGIN_NAMESPACE) or name in REPOSITORY_COMMANDS
 COMMAND_NAME = re.compile(r"<command-name>\s*(.*?)\s*</command-name>", re.S)
+COMMAND_ENTRY = re.compile(r"\s*<command-(name|message|args)>")  # how Claude Code writes a command
 COMMAND_ARGS = re.compile(r"<command-args>\s*(.*?)\s*</command-args>", re.S)
 
 
@@ -90,17 +97,19 @@ def text_of(content) -> str:
 
 
 def provenance(entry: dict) -> str:
-    """'human', the recorded kind of a synthetic prompt, or 'unknown'."""
+    """'human', the recorded kind of a synthetic prompt, or 'unknown'. A compaction's
+    summary and a meta entry are synthetic whatever origin they record: Claude Code gives
+    a summary the origin of the turn that was compacted, "human" included."""
+    if entry.get("isCompactSummary"):
+        return "compact-summary"
+    if entry.get("isMeta"):
+        return "meta"
     origin = entry.get("origin") or {}
     kind = origin.get("kind") or entry.get("turnOrigin")
     if kind == HUMAN or entry.get("turnOrigin") == HUMAN:
         return HUMAN
     if kind:
         return str(kind)
-    if entry.get("isCompactSummary"):
-        return "compact-summary"
-    if entry.get("isMeta"):
-        return "meta"
     return UNKNOWN
 
 
@@ -118,6 +127,7 @@ class Turn:
     files: list = field(default_factory=list)
     commits: list = field(default_factory=list)
     pull_requests: list = field(default_factory=list)
+    command: bool = False  # written as a slash command (Claude Code's <command-name> markup)
 
     @property
     def listed(self) -> bool:
@@ -176,7 +186,7 @@ def parse_entries(entries: Iterable[dict]) -> Transcript:
     current: Optional[Turn] = None
     last_listed: Optional[Turn] = None
 
-    def start(entry: dict, origin: str, prompt: str) -> Turn:
+    def start(entry: dict, origin: str, prompt: str, command: bool = False) -> Turn:
         nonlocal current, last_listed
         turn = Turn(
             key=entry.get("uuid") or f"seq-{len(turns)}",
@@ -184,6 +194,7 @@ def parse_entries(entries: Iterable[dict]) -> Transcript:
             origin=origin,
             started_at=entry.get("timestamp"),
             prompt=prompt,
+            command=command,
         )
         if not turn.listed and last_listed is not None:
             turn.parent_key = last_listed.key
@@ -242,7 +253,8 @@ def parse_entries(entries: Iterable[dict]) -> Transcript:
             bucket = {HUMAN: "human prompts", UNKNOWN: "prompts of unknown origin", SDK: "human prompts"}.get(
                 origin, "synthetic prompts (wake-ups, notifications, hook feedback)")
             shares[bucket] += tokens(prompt)
-            start(entry, origin, prompt_text(prompt))
+            start(entry, origin, prompt_text(prompt),
+                  command=bool(COMMAND_ENTRY.match(prompt) and COMMAND_NAME.search(prompt)))
 
         elif kind == "assistant":
             for block in content or []:
@@ -266,6 +278,7 @@ def parse_entries(entries: Iterable[dict]) -> Transcript:
                     current.replies.append(block.get("text", ""))
                     current.last = "text"
 
+    _file_commands(turns)
     for turn in turns:
         answer = turn.answer
         if turn.listed:
@@ -275,6 +288,25 @@ def parse_entries(entries: Iterable[dict]) -> Transcript:
         else:
             shares["assistant replies to synthetic turns"] += sum(tokens(t) for t in turn.replies)
     return Transcript(session_id=session_id, turns=turns, shares=shares, title=title, places=places, start=start_cwd)
+
+
+LOCAL_OUTPUT = re.compile(r"\s*<local-command-(stdout|stderr|caveat)>")
+
+
+def _file_commands(turns: list) -> None:
+    """Commands Claude never answered are not messages (see the module's rules); what was
+    filed under one goes under the message before it."""
+    last = None
+    for turn in turns:
+        # Only what Claude Code wrote as a command: a typed message that starts with a path
+        # ("/Users/me/app.py fails") stays a message, answered or not.
+        if (turn.listed and not turn.replies and not turn.tool_calls
+                and (turn.command or LOCAL_OUTPUT.match(turn.prompt))):
+            turn.origin = "command"
+        if turn.listed:
+            turn.parent_key, last = None, turn
+        else:
+            turn.parent_key = last.key if last else None
 
 
 def _note_place(places: Counter, cwd: Optional[str], tool_input) -> None:

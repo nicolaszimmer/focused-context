@@ -13,6 +13,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import isolate  # noqa: E402,F401  (before any test runs: none reaches a real service)
+
 from test_focused import HUMAN, assistant, text, user  # noqa: E402
 from test_remote import RemoteFixture  # noqa: E402
 
@@ -76,22 +78,31 @@ class RecallTest(RemoteFixture):
         self.assertEqual(out, {"decision": "block", "reason": "stopped"})
         self.assertEqual(self.worker.recalls, [])
 
-    def test_with_jev_switched_on_for_recall_it_keeps_only_what_bears_on_the_message(self):
+    def test_with_jev_on_it_keeps_only_what_bears_on_the_message(self):
         self.worker.recall_items = [item("Is the Worker deployed?", 0.8), item("Is the ledger built?", 0.7, title="Ledger")]
         asked = []
 
         def ask(state, questions, deadline=None):
             asked.append(state)
             return {"bears_e1": {"type": "noul", "noul": 0.9}, "bears_e2": {"type": "noul", "noul": 0.1}}
+        self.assertIn("Ledger", self.prompt("Where does the hosted index live now?"))  # Jev off: not asked
         with mock.patch.object(jev, "http_ask", ask), mock.patch.object(jev, "enabled", return_value=True):
-            self.assertIn("Ledger", self.prompt("Where does the hosted index live now?"))  # switched off: not asked
-            self.assertEqual(asked, [])
-            os.environ["FOCUSED_JEV_RECALL"] = "1"
             context = self.prompt("Where does the hosted index live now?")
-        self.assertIn("Is the Worker deployed?", context)
-        self.assertNotIn("Ledger", context)
-        self.assertEqual(asked[0]["earlier"][0]["answered"], ["Not yet: it needs your account."])
+            self.assertIn("Is the Worker deployed?", context)
+            self.assertNotIn("Ledger", context)
+            self.assertEqual(asked[0]["earlier"][0]["answered"], ["Not yet: it needs your account."])
+            os.environ["FOCUSED_JEV_RECALL"] = "0"  # switched off for recall alone
+            self.assertIn("Ledger", self.prompt("Where does the hosted index live now?"))
+            self.assertEqual(len(asked), 1)
         os.environ.pop("FOCUSED_JEV_RECALL")
+
+    def test_when_jev_fails_the_block_keeps_what_passed_the_floor(self):
+        def failing(state, questions, deadline=None):
+            raise jev.JevTimeout("out of time")
+        with mock.patch.object(jev, "http_ask", failing), mock.patch.object(jev, "enabled", return_value=True):
+            context = json.loads(self.prompt("Where does the hosted index live now?"))["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Is the Worker deployed on Cloudflare yet?", context)
+        self.assertIn("recall: jev: out of time", (Path(os.environ["FOCUSED_HOME"]) / "errors.log").read_text())
 
     def test_the_block_stays_short(self):
         long = [item("x " * 400, 0.9, answers=("y " * 400,)) for _ in range(3)]
@@ -136,6 +147,9 @@ class RecallTest(RemoteFixture):
                                                   "origin": {"kind": "human"}}}]) + "\n")
         self.assertTrue(recall.first_message(self.fresh))
         self.assertIn("Is the Worker deployed", self.prompt("Where does the hosted index live now?"))
+        # A typed message that starts with a path is a message.
+        self.fresh.write_text(json.dumps(user("p1", "/Users/me/app.py fails on start", **HUMAN) | {"sessionId": "s2"}) + "\n")
+        self.assertFalse(recall.first_message(self.fresh))
 
     def test_words_alone_never_join_a_first_message_whatever_the_floor(self):
         self.worker.recall_items = [dict(item("Found by its words", None), via=["words"])]

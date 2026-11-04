@@ -11,6 +11,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import isolate  # noqa: E402,F401  (before any test runs: none reaches a real service)
+
 from focused import install, update
 
 ROOT = Path(__file__).resolve().parent.parent

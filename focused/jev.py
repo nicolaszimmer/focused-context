@@ -222,7 +222,7 @@ def answer_requests(parts: list, n: int, paragraphs: list, wanted: set) -> list:
 
 
 # Recall (focused/recall.py): does an earlier message, with what answered it then, bear on
-# the one just sent? Ships switched off (FOCUSED_JEV_RECALL=1) and is judged by its output.
+# the one just sent? Asked whenever Jev is on (decided on 2026-11-04; FOCUSED_JEV_RECALL=0 switches it off).
 # Its words are kept out of WORDED: nothing stored depends on them, so changing them asks
 # nothing again.
 RECALL_POLICY = (

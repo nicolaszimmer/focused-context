@@ -14,6 +14,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import isolate  # noqa: E402,F401  (before any test runs: none reaches a real service)
+
 import test_summary  # noqa: E402  (not its classes: their tests would run here again)
 from test_focused import HUMAN, Fixture, assistant, text, tool, user  # noqa: E402
 from test_remote import RemoteFixture  # noqa: E402

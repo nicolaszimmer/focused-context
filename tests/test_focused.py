@@ -11,8 +11,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import isolate  # noqa: E402,F401  (before any test runs: none reaches a real service)
+
 from focused import cli, store
-from focused.transcript import parse
+from focused.transcript import parse, parse_entries
 
 HUMAN = {"origin": {"kind": "human"}, "turnOrigin": "human"}
 WAKE = {"origin": {"kind": "task-notification"}, "turnOrigin": "task_notification"}
@@ -145,6 +148,30 @@ class ParseTest(Fixture):
         self.assertLess(parsed.shares["human prompts"], 100)
 
 
+class CommandTest(unittest.TestCase):
+    def test_a_command_claude_never_answers_is_not_a_message(self):
+        parsed = parse_entries([
+            user("c1", "<command-name>/clear</command-name>\n<command-args></command-args>"),  # no origin
+            user("o1", "<local-command-stdout>Cleared</local-command-stdout>"),
+            user("u1", "Where were we?", ts="2026-11-03T06:01:00.000Z", **HUMAN),
+            assistant(text("At the index.")),
+            user("m1", "<command-name>/model</command-name>", **HUMAN),  # answered by Claude Code, not Claude
+            user("w1", "<task-notification>CI green</task-notification>", **WAKE),
+            assistant(text("Nothing to do.")),
+            user("r1", "<command-name>/review</command-name>\n<command-args>7</command-args>", **HUMAN),
+            assistant(text("Reviewed.")),  # a command Claude answers stays a message
+            user("p1", "/Users/me/app.py fails on start", **HUMAN),  # a typed message, not yet answered
+            user("q1", "Why does <command-name>/clear</command-name> stay in the index?", **HUMAN),  # quotes it
+        ])
+        self.assertEqual([(t.key, t.origin, t.parent_key) for t in parsed.turns], [
+            ("c1", "command", None), ("o1", "command", None), ("u1", "human", None),
+            ("m1", "command", "u1"), ("w1", "task-notification", "u1"), ("r1", "human", None),
+            ("p1", "human", None), ("q1", "human", None)])
+        # Claude Code writes the command's message tag first, as often as its name.
+        self.assertEqual(parse_entries([user("c1", "<command-message>clear</command-message>\n"
+                                                   "<command-name>/clear</command-name>")]).turns[0].origin, "command")
+
+
 class StoreTest(Fixture):
     def count(self, conn, sql="SELECT count(*) FROM turns"):
         return conn.execute(sql).fetchone()[0]
@@ -154,6 +181,36 @@ class StoreTest(Fixture):
         self.index()
         self.assertEqual(self.count(conn), 5)
         self.assertEqual(self.count(conn, "SELECT count(*) FROM turns_fts WHERE turns_fts MATCH 'hooks'"), 1)
+
+    def test_a_compaction_summary_is_never_a_persons_message(self):
+        # Claude Code gives a compaction's summary the origin of the turn it compacted.
+        summary = user("cs", "This session is being continued from a previous conversation.\n\n1. Primary Request",
+                       ts="2026-11-03T06:30:00.000Z", isCompactSummary=True, isVisibleInTranscriptOnly=True, **HUMAN)
+        self.write(SESSION + [summary, assistant(text("Picking up where we left off."))])
+        conn = self.index()
+        row = conn.execute("SELECT origin, parent_key FROM turns WHERE turn_key = 'cs'").fetchone()
+        self.assertEqual(tuple(row), ("compact-summary", "old"))
+        # An index that read it as a message (before 0.8.1) loses its parts on the next read.
+        conn.execute("INSERT INTO parts (session_id, turn_key, n, text) VALUES ('s1', 'cs', 1, 'This session')")
+        conn.execute("INSERT INTO pairs (session_id, turn_key, n, para_key, answers, partly, wording) "
+                     "VALUES ('s1', 'cs', 1, 'cs:0.1', 0.9, 0, 'w')")
+        conn.commit()
+        self.index()
+        self.assertEqual(self.count(conn, "SELECT count(*) FROM parts WHERE turn_key = 'cs'"), 0)
+        self.assertEqual(self.count(conn, "SELECT count(*) FROM pairs WHERE turn_key = 'cs'"), 0)
+        # Its reply is filed under the message it followed.
+        self.assertEqual(conn.execute("SELECT turn_key FROM paras WHERE source_key = 'cs'").fetchone()[0], "old")
+
+    def test_a_turn_read_differently_is_rewritten_even_when_nothing_else_changed(self):
+        # A summary that opens a transcript has no message before it, so only its origin
+        # changes when it is read again under 0.8.1's rule.
+        self.write([user("cs", "This session is being continued from a previous conversation.",
+                         isCompactSummary=True, **HUMAN), assistant(text("Picking up."))])
+        conn = self.index()
+        conn.execute("UPDATE turns SET origin = 'human' WHERE turn_key = 'cs'")  # as an older reading stored it
+        conn.commit()
+        self.index()
+        self.assertEqual(conn.execute("SELECT origin FROM turns WHERE turn_key = 'cs'").fetchone()[0], "compact-summary")
 
     def test_stop_hook_answer_wins_over_a_lagging_transcript(self):
         conn = self.index(stop_message="The final words.")
@@ -470,7 +527,7 @@ class InSessionTest(Fixture):
         self.transcript.unlink()
         code, out = self.run_cli("--in-session", "nope", "answers")
         self.assertEqual(code, 0)
-        self.assertIn("No indexed sessions", out)
+        self.assertIn("no other session of this project is indexed", out)  # nothing said here, nothing else to offer
         code, out = self.run_cli("--in-session", "nope", "find")
         self.assertEqual(code, 0)
         self.assertIn("Name the words", out)

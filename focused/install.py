@@ -11,7 +11,8 @@ which calls `install()`:
 
 - **Hooks**, merged into `~/.claude/settings.json`: Stop (async: indexing, and Jev with
   `jev=True`), SessionEnd, SessionStart after /clear and compaction, and UserPromptSubmit
-  (the stop after an hour without a reply).
+  (the stop after an hour without a reply, and recall with a session's first message,
+  which Jev sifts with `jev=True`).
 - **Commands**, as personal skills `focused-answers`, `focused-find` and `focused-context`
   in `~/.claude/skills`. A personal skill takes precedence over a repository's skill of
   the same name, so a repository's own copies are shadowed, not doubled.
@@ -66,7 +67,7 @@ def _hooks(root: Path, jev: bool, follow: Optional[str] = None) -> dict:
         "Stop": [{"hooks": [command("stop", prefix="FOCUSED_JEV=1 " if jev else "", run_async=True)]}],
         "SessionEnd": [{"hooks": [command("session-end", timeout=15)]}],
         "SessionStart": [{"matcher": "clear|compact", "hooks": [command("session-start", timeout=30)]}],
-        "UserPromptSubmit": [{"hooks": [command("prompt", timeout=15)]}],
+        "UserPromptSubmit": [{"hooks": [command("prompt", timeout=15, prefix="FOCUSED_JEV=1 " if jev else "")]}],
     }
     if follow:
         # In the background, so a slow network never holds up the start of a session.
