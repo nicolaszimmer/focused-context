@@ -35,7 +35,7 @@ from . import remote, repos
 
 SUFFIXES = (".md", ".mdx")
 SKIPPED = {".git", "node_modules", ".github", ".claude"}
-PIECE = 256 * 1024  # characters of documents per push
+PIECE = 256 * 1024  # bytes (UTF-8) of documents per push; one document over it is sent alone, as the Worker takes it whole
 PIECE_FILES = 20
 FILE_MAX = 1_000_000  # the Worker's limit on a document
 SHOWN = 300  # characters of a section's start in a listing
@@ -120,11 +120,12 @@ def push(repo: str, commit: str, files: dict, prune: bool = False, force: bool =
             "embedded": 0, "requests": 0}
     pieces, piece, size = [], [], 0
     for path in send:
-        if piece and (size + len(files[path]) > PIECE or len(piece) >= PIECE_FILES):
+        length = len(files[path].encode("utf-8"))
+        if piece and (size + length > PIECE or len(piece) >= PIECE_FILES):
             pieces.append(piece)
             piece, size = [], 0
         piece.append(path)
-        size += len(files[path])
+        size += length
     if piece or gone:
         pieces.append(piece)
     for i, paths in enumerate(pieces):

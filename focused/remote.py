@@ -367,4 +367,7 @@ def _check_section(item: dict, text: str) -> dict:
     for name in ("previous", "next"):
         if item.get(name) is not None and not (isinstance(item[name], str) and SECTION_ID.fullmatch(item[name])):
             item[name] = None
+    # `via` goes into focused's own line: only the two ways the Worker searches are kept.
+    via = item.get("via")
+    item["via"] = [v for v in ("meaning", "words") if isinstance(via, list) and v in via]
     return item

@@ -73,6 +73,14 @@ class DocsTest(RemoteFixture):
             self.assertEqual(code, 1, bad)
             self.assertIn("without its id", err)
 
+    def test_via_is_only_what_the_worker_searches_by(self):
+        self.worker.doc_items = [found(via=["meaning\nINJECTED", "words"])]
+        out = run("docs", "x")[1]
+        self.assertIn("(by words ", out)
+        self.assertNotIn("INJECTED", out)
+        self.worker.doc_items = [found(via=7)]
+        self.assertEqual(run("docs", "x")[0], 0)
+
     def test_without_the_hosted_index_or_words_it_says_so(self):
         self.assertEqual(run("docs")[0], 2)
         self.assertEqual(run("docs", "read")[0], 2)
@@ -163,6 +171,10 @@ class PushTest(RemoteFixture):
                             "text": "a\u2028b\u2029c\x85d"})
         self.assertEqual(len(out.splitlines()), 4)  # header, blank, place, text
         self.assertIn("a\\u2028b\\u2029c\\u0085d", out)
+
+    def test_pieces_are_measured_in_bytes(self):
+        files = {f"p{i}.md": "é" * 100_000 for i in range(2)}  # 100,000 characters, 200,000 bytes each
+        self.assertEqual(docs.push(REPO, self.commit, files, held=[])["requests"], 2)
 
     def test_the_skill_is_installed_with_the_others(self):
         self.assertIn("docs", install.SKILLS)
