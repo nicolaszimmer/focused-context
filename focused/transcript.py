@@ -25,7 +25,8 @@ no model is asked anything.
   no tool call after it (`/clear`, `/model`, `/cost`: Claude Code runs them itself, and
   `/clear` is written as the new session's first entry), and the output Claude Code
   records for such a command (`<local-command-stdout>`). They are filed as "command".
-  A command Claude is about to answer reads as one until its reply is written.
+  A command Claude is about to answer counts as a command until its reply is written;
+  the next read then files it as a message.
 """
 
 from __future__ import annotations
