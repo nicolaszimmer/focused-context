@@ -10,6 +10,9 @@
     focused update --follow BRANCH [--jev]    # bring that install to where the branch is now
     focused recall <words>                    # what earlier sessions said about it (needs the hosted index)
     focused steward <PR URL> --head BRANCH    # a steward session's arguments for that pull request
+    focused docs <words>                      # sections of development documents that bear on it
+    focused docs read <id>                    # one section in full
+    focused docs push [--prune] [--force] <files or folders>   # send a checkout's documents to the index
 
 With FOCUSED_JEV=1 and an OpenRouter key, the Stop hook also asks Jev what each part
 of a message does and which paragraphs answer it (focused/jev.py); `answers` then lists
@@ -42,7 +45,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from . import idle, install, jev, recall, remote, repos, steward, store, summary
+from . import docs, idle, install, jev, recall, remote, repos, steward, store, summary
 from . import update as updater
 from .transcript import LISTED, is_own_command
 
@@ -810,6 +813,78 @@ def cmd_recall(args) -> int:
     return 0
 
 
+def cmd_docs(args) -> int:
+    """Sections of development documents (focused/docs.py), from the hosted index: those that
+    bear on the words given, one in full (`read <id>`), or a checkout's documents sent there
+    (`push <paths>`)."""
+    words = list(args.words)
+    literal = words[:1] == ["--"]  # after `--` the words are a search, even if the first is read or push
+    if literal:
+        words = words[1:]
+    action = words[0] if words and not literal and words[0] in ("read", "push") else None
+    if not words or action and len(words) == 1:
+        return _fail(args, "Name what to look for, as in: docs how the Worker is deployed; or: docs read <id>", 2)
+    try:
+        if remote.settings() is None:
+            return _fail(args, "focused: docs needs the hosted index: set FOCUSED_REMOTE_URL and FOCUSED_REMOTE_TOKEN "
+                               "(README, \"The hosted index\").", 1)
+        if action == "read":
+            if len(words) != 2 or not remote.SECTION_ID.fullmatch(words[1]):
+                return _fail(args, "focused: docs read takes one section's id, 16 hex characters, as docs lists them.", 2)
+            found = remote.docs_read(words[1])
+            if found is None:
+                return _fail(args, f"focused: the hosted index has no section {words[1]}; it may have changed since: "
+                                   "search again.", 1)
+            print(docs.section(found))
+            return 0
+        if action == "push":
+            options = _docs_push_parser().parse_args(words[1:])
+            root, name, commit = docs.checkout(Path(options.paths[0]).resolve(), options.repo)
+            files = docs.collect(root, options.paths)
+            if not files:
+                return _fail(args, "focused: no Markdown or MDX file there.", 1)
+            done = docs.push(name, commit, files, prune=options.prune, force=options.force)
+            print(f"{name} at {commit[:12]}: {done['files']} documents sent "
+                  f"({done['unchanged_files']} unchanged, not sent), {done['gone']} deleted; "
+                  f"{done['sections']} sections, {done['unchanged']} of them unchanged, {done['embedded']} embedded.")
+            return 0
+        repo, limit = args.repo, args.limit
+        if not literal:  # --repo and --limit after the words count too, as elsewhere
+            after = _docs_search_parser().parse_args(words)
+            words, repo, limit = after.words, after.repo or repo, after.limit or limit
+            if not words:
+                return _fail(args, "Name what to look for, as in: docs how the Worker is deployed", 2)
+        found = remote.docs_search(" ".join(words), repos=repo and [repo], limit=limit,
+                                   min_similarity=docs.ON_DEMAND_MIN)
+    except remote.RemoteError as error:
+        return _fail(args, f"focused: could not reach the hosted index ({error}).", 1)
+    except (docs.DocsError, OSError, UnicodeDecodeError) as error:
+        return _fail(args, f"focused: {error}", 1)
+    except SkillMessage as message:  # push's own arguments, from a skill
+        print(message)
+        return 0
+    print(docs.listing(found["items"], found["vectors"]))
+    return 0
+
+
+def _docs_search_parser():
+    search = Parser(prog="focused docs", description="search development documents")
+    search.add_argument("words", nargs="*")
+    search.add_argument("--limit", type=int, choices=range(1, 31), metavar="1-30")
+    search.add_argument("--repo")
+    return search
+
+
+def _docs_push_parser():
+    push = Parser(prog="focused docs push", description="send a checkout's Markdown and MDX documents to the hosted index")
+    push.add_argument("paths", nargs="+", help="files, and folders whose .md and .mdx files are sent")
+    push.add_argument("--repo", help="the name to file them under (default: the checkout's origin, as github.com/owner/name)")
+    push.add_argument("--prune", action="store_true",
+                      help="delete the repository's documents the index holds and the paths given don't")
+    push.add_argument("--force", action="store_true", help="send unchanged documents too")
+    return push
+
+
 def cmd_find(args) -> int:
     if not args.words:
         return _fail(args, "Name the words to search for, as in: find webhook retry", 2)
@@ -929,6 +1004,13 @@ def main(argv=None) -> int:
     hand.add_argument("url", help="the pull request, https://github.com/owner/name/pull/N")
     hand.add_argument("--head", help="its head branch")
     hand.set_defaults(run=cmd_steward)
+
+    sections = sub.add_parser("docs", help="sections of development documents: <words>, read <id>, or push <paths>")
+    # Everything from the first word on is the docs command's own: `push` takes options after it.
+    sections.add_argument("words", nargs=argparse.REMAINDER)
+    sections.add_argument("--limit", type=int, default=8, choices=range(1, 31), metavar="1-30")
+    sections.add_argument("--repo", help="search only this repository's documents")
+    sections.set_defaults(run=cmd_docs)
 
     find = sub.add_parser("find", help="search prompts and answers")
     find.add_argument("words", nargs="*")
