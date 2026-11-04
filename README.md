@@ -307,6 +307,10 @@ tool and the arguments the hook gives (`focused/steward.py`). The steward:
 - posts one comment, "Ready to merge" or "Waiting on you", with what merging does and the
   decisions left open, and posts it again only when that changes.
 
+The opening session first lets go of the pull request: opening it may subscribe that session
+to it, and a pull request's events reach one session only. A steward whose subscription
+didn't take says so at the end of its turn.
+
 `/focused:steward <PR URL> [branch]` hands over a pull request that is already open. Locally,
 where sessions can't start cloud sessions, the hook does nothing. `FOCUSED_STEWARD=0`
 switches it off, and `FOCUSED_STEWARD_MODEL` picks another model. A pull request from a

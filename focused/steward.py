@@ -36,7 +36,8 @@ maintainer.
 
 1. Call subscribe_pr_activity for {owner}/{repo} #{number} now, then read the pull request: \
 its description, CI, open review threads and mergeability. Follow the rules the subscription \
-gives you.
+gives you. If the subscription says another session is watching the pull request, its events \
+won't reach you: say so in one line at the end of your turn, so the maintainer knows.
 2. Fix what is this pull request's to fix: CI it breaks, merge conflicts, and review findings \
 that are real and in its scope. Push to `{head}` only, as new commits: never force-push, \
 rebase or amend. Before every push, run the repository's own checks: those its CLAUDE.md \
@@ -55,10 +56,11 @@ maintainer."""
 
 HANDOFF = (
     "focused: the maintainer decided (2026-11-04) that a session doesn't watch the pull requests it "
-    "opens. Hand {owner}/{repo}#{number} to a steward session instead: call the create_session tool "
-    "(claude-code-remote) with exactly these arguments, don't call subscribe_pr_activity for it here "
-    "(unsubscribe if you already did), and tell the maintainer in one line that a steward session on "
-    "{model} drives it. Then go on with the rest of the work, if any.\n{arguments}"
+    "opens. Hand {owner}/{repo}#{number} to a steward session instead. First call unsubscribe_pr_activity "
+    "for it: opening it may have subscribed this session, and a pull request's events go to one session "
+    "only. Then call the create_session tool (claude-code-remote) with exactly these arguments, don't "
+    "subscribe to it here, and tell the maintainer in one line that a steward session on {model} drives "
+    "it. Then go on with the rest of the work, if any.\n{arguments}"
 )
 
 
