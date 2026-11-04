@@ -419,7 +419,8 @@ def cmd_hook_prompt(args) -> int:
             return 0
         # Nothing has been done in the session yet: its repositories are those it starts with.
         mine = repos.attached(payload.get("cwd") or _here())
-        items = recall.related(prompt, exclude=payload.get("session_id"), mine=mine)
+        items = recall.related(prompt, exclude=payload.get("session_id"), mine=mine,
+                               log=lambda error: _log("recall: jev", error))
         if items:
             sys.stdout.write(json.dumps({"hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit", "additionalContext": recall.block(items, mine)}}))

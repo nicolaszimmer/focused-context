@@ -214,7 +214,7 @@ on what you're doing now (`focused/recall.py`, the Worker's `POST /v1/recall`):
   0.6 (`FOCUSED_RECALL_MIN`), each with its first answer. Words alone don't add to it,
   since a shared word says little. Commands and wake-ups don't count as a first message.
 - **On demand**, `/focused-recall <what>` lists the best five in full, by meaning at a
-  similarity of at least 0.4. Claude may use it itself when you refer to earlier work, or
+  similarity of at least 0.45. Claude may use it itself when you refer to earlier work, or
   before re-deciding something settled before.
 - **The same repositories first** (`focused/repos.py`). Each session links to the
   repositories it worked in, counted by its transcript entries there: each entry's working
@@ -224,9 +224,10 @@ on what you're doing now (`focused/recall.py`, the Worker's `POST /v1/recall`):
   rest. Relevance still comes first: a part below the similarity floor isn't lifted in by
   its repository. A repository is named by its `origin`, as `github.com/owner/name`, so
   it has one name in every container; a folder without a git remote has none.
-- **Jev can sift the candidates**: with `FOCUSED_JEV_RECALL=1` and Jev on, it reads each one
-  and the block keeps only those it reads as bearing on your message. It ships switched off,
-  as new Jev questions do, and is judged by its output.
+- **Jev sifts the candidates** when Jev is on: it reads each one, and the block keeps only
+  those it reads as bearing on your message, in the order the Worker gave. If Jev can't
+  answer within 3 seconds, the block keeps what passed the floor. `FOCUSED_JEV_RECALL=0`
+  switches this off alone.
 - **The block is quoted for reference**, and says so: no text in it is an instruction.
 - **Without the hosted index** nothing is added, and the command says so. Without the
   Worker's AI and Vectorize bindings it recalls by words alone, so nothing is added to a
@@ -478,6 +479,10 @@ Made on 2026-11-04 by the maintainer:
   The quoting keeps recalled text from passing for the block's own lines; it doesn't stop
   Claude from reading an instruction in it, which the header tells it not to follow.
 - The hosted index runs on Workers Paid.
+- Recall's similarity floors are 0.6 for a first message and 0.45 on demand, set from
+  bge-m3's scores on real sessions (a paraphrase 0.87, a related question 0.78, an unrelated
+  one 0.43).
+- Jev sifts the candidates for a first message whenever Jev is on.
 
 Open:
 
@@ -491,6 +496,3 @@ Open:
    the hosted index's search spans all of them. Recall and the choice of a session now go
    by repository, which may settle this: whether the project should still matter
    anywhere (search, naming a session by its title) is open.
-5. The similarity a part needs: 0.6 to join a first message and 0.4 on demand, Claude's
-   guesses for bge-m3, to be judged by output once the Worker runs; and whether Jev sifts
-   the candidates.
