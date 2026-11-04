@@ -489,6 +489,8 @@ Made on 2026-11-04 by the maintainer:
   bge-m3's scores on real sessions (a paraphrase 0.87, a related question 0.78, an unrelated
   one 0.43).
 - Jev sifts the candidates for a first message whenever Jev is on.
+- The block added to a first message keeps what answered each earlier message, quoted as
+  the messages are: the answers carry most of what recall is for.
 
 Open:
 
