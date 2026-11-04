@@ -207,9 +207,11 @@ def _ledger(conn, session_id: str, numbers: dict) -> dict:
     return {mark: _latest(entries) for mark, entries in marked.items()}
 
 
-def _words(text: str) -> tuple:
-    """A paragraph's words in order, without its list number, markup or case."""
-    return tuple(re.findall(r"\w+", NUMBERED.sub("", text, count=1).lower()))
+def _words(text: str) -> str:
+    """A paragraph as compared for repeats: without its list number, its emphasis and code
+    marks (* and `), its spacing and its case. Every other symbol counts, so C++ and C#,
+    or == and !=, are different entries."""
+    return " ".join(re.sub(r"[*`]+", "", NUMBERED.sub("", text, count=1)).lower().split())
 
 
 def _latest(entries: list) -> list:

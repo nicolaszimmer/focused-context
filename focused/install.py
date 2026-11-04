@@ -172,7 +172,9 @@ def install(root: Optional[Path] = None, jev: bool = False, settings_path: Optio
     settings["hooks"] = hooks
     settings["env"] = dict(settings.get("env") or {}, **{ENV_MARK[0]: ENV_MARK[1]})
     if jev:
-        settings["env"][LEDGER_ENV[0]] = LEDGER_ENV[1]
+        # Only where it isn't set: a person's FOCUSED_JEV_LEDGER=0 survives the reinstall
+        # that each update with --follow runs.
+        settings["env"].setdefault(LEDGER_ENV[0], LEDGER_ENV[1])
     _write(settings_path, settings)
 
     for name, text in skills.items():
@@ -194,13 +196,17 @@ def uninstall(settings_path: Optional[Path] = None, skills_dir: Optional[Path] =
     done = []
     if settings_path.exists():
         settings = _read(settings_path)
+        # FOCUSED_JEV_LEDGER is install's to remove only where it installed Jev's hooks.
+        with_jev = any(_ours(hook) and str(hook.get("command", "")).startswith("FOCUSED_JEV=1 ")
+                       for group in (settings.get("hooks") or {}).get("Stop", []) if isinstance(group, dict)
+                       for hook in (group.get("hooks") or []))
         hooks = _without_ours(settings.get("hooks") or {})
         if hooks:
             settings["hooks"] = hooks
         else:
             settings.pop("hooks", None)
         env = dict(settings.get("env") or {})
-        for key, value in (ENV_MARK, LEDGER_ENV):
+        for key, value in (ENV_MARK, LEDGER_ENV) if with_jev else (ENV_MARK,):
             if env.get(key) == value:
                 env.pop(key)
         if env:

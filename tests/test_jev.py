@@ -396,6 +396,8 @@ class LedgerTest(Fixture):
         store.ask_jev(conn, "s1", ask=FakeJev(), ledger=True)
         findings = summary.build(conn, "s1")[1].split("## Findings", 1)[1].split("## Messages", 1)[0]
         self.assertIn("module A", findings)
+        self.assertNotEqual(summary._words("I found a == b fails."), summary._words("I found a != b fails."))
+        self.assertNotEqual(summary._words("I found C++ builds."), summary._words("I found C# builds."))
         self.assertEqual(findings.count("module B"), 1)  # its list number and markup aside, the same words
         self.assertIn("**I found** that the cache is rebuilt on every read in module B.", findings)  # the later
 

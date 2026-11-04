@@ -434,7 +434,8 @@ sh "$D/scripts/install-cloud.sh" --jev --follow main
 - sets `FOCUSED_INSTALL=environment` in the settings' `env`, so a repository's own
   focused hooks, such as rapid-review-bot's, stand down instead of running twice.
 - `--jev` asks Jev in the `Stop` hook, and switches on findings and asks
-  (`FOCUSED_JEV_LEDGER=1` in the settings' `env`, which `--uninstall` removes). The environment then needs
+  (`FOCUSED_JEV_LEDGER=1` in the settings' `env`, unless it is already set: a `0` you set
+  stays through every update; `--uninstall` removes the `1` it set). The environment then needs
   `FOCUSED_OPENROUTER_API_KEY` or `OPENROUTER_API_KEY` among its variables, and access to
   openrouter.ai. The setup script itself can't read the variables; the hooks can.
 - `--follow main` keeps the install at focused-context's main; see "Updates" below.
