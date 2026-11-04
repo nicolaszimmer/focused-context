@@ -10,9 +10,10 @@ The user's options: $ARGUMENTS
 The first option is the pull request's URL; the second, if given, its head branch. Read the
 pull request with the GitHub tools whether or not the branch is given: its head must be in
 the same repository (a steward can't push to a fork), so for a fork say so and run nothing.
-If the head branch isn't given, use the pull request's head ref. Then run this command with
-the Bash tool, the URL and the branch each as its own single-quoted argument, with any single
-quote inside escaped as `'\''`:
+Always pass the pull request's own head ref as the branch. If a branch was given and differs
+from that ref, say so and run nothing: the steward must push to the pull request's branch, not
+to another one. Then run this command with the Bash tool, the URL and the branch each as its
+own single-quoted argument, with any single quote inside escaped as `'\''`:
 
 ```
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/focused.py" --in-session "${CLAUDE_SESSION_ID}" steward '<URL>' --head '<branch>'
