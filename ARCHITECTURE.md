@@ -72,7 +72,7 @@ built in 0.10
 | **Recall** | What earlier sessions said that bears on what the person does now, found by meaning (Workers AI's bge-m3 embeddings of each message part, in Vectorize) and by words, each with what answered it. A short block joins a session's first typed message; `/focused-recall` gives more, and Claude may use it itself. Jev sifts a first message's candidates when it is on. | `focused/recall.py`; the Worker's `src/recall.ts` | Built (0.8) |
 | **Repository graph** | How sessions relate. Each session links to the repositories it worked in, weighted by its transcript entries there (working directories, and the files and folders tools were given); repositories are related when one session worked in both. Recall and the choice of a session go to the same repositories first, then to related ones, among what is relevant. Repositories are named by their `origin`, the same in every container. | `focused/repos.py`; the Worker's `session_repos` | Built (0.8) |
 | **Findings and asks** | The ledger's first step. Jev reads the last text Claude wrote in each turn and wake-up, three questions a paragraph: does it report a finding, does it ask the person, does it report progress. The summary shows the findings that aren't progress, and the asks, newest last. | `focused/jev.py` (`LEDGER`), `store.py` (`marks`), `summary.py`; the Worker's `marks` | Built (0.9), switched on by the maintainer on 2026-11-04 (`FOCUSED_JEV_LEDGER=1`) |
-| **Development documents** | Documents split into sections by their headings in the Worker, each with its repository, path, heading path and commit, and searched by meaning and by words as recall searches message parts. `/focused:docs` lists the sections that bear on the work and reads one in full, so a session and its subagents read sections, not whole documents. Loaded by hand (`focused docs push`) until the way in is chosen. | `focused/docs.py`, `skills/docs`; the Worker's `src/docs.ts`, `src/sections.ts` | Built (0.11) |
+| **Development documents** | Documents split into sections by their headings in the Worker, each with its repository, path, heading path and commit, and searched by meaning and by words as recall searches message parts. `/focused:docs` lists the sections that bear on the work and reads one in full, so a session and its subagents read sections, not whole documents. Loaded by a GitHub Action in each document's repository (decided on 2026-11-04; not yet added there), by hand until then. | `focused/docs.py`, `skills/docs`; the Worker's `src/docs.ts`, `src/sections.ts` | Built (0.11) |
 | **Ledger** | Later messages paired against the asks, the way answers are paired, so an ask closes when it is settled; a question for what Claude commits to doing. The ledger collects what is waiting on the person, the to-dos, the findings and the PRs across sessions. | to be built | Planned |
 | **View page** | A page served by the Worker that shows the ledger. A decision answered there is written to it. | to be built | Planned |
 | **Restore from the ledger** | The summary's decisions and open items come from the ledger, which spans every session and device, not one transcript. | to be built | Planned |
@@ -126,7 +126,9 @@ repository per working session. What was built differs:
    same day. Then asks closing when settled, to-dos, and the page. Ledger items join recall.
 4. **Development documents** (decided on 2026-11-04: rapid-review-docs' pages,
    rapid-review-web's `dev/plan.md`, and focused-context's README.md and ARCHITECTURE.md first,
-   read through a command first, an MCP endpoint perhaps later). Built (0.11), loaded by hand.
+   read through a command first, an MCP endpoint perhaps later). Built (0.11), loaded by hand
+   until a GitHub Action in each document's repository runs `focused docs push` (decided the
+   same day); sections don't join a first message for now.
 5. **Steward sessions, then triage** (prioritised on 2026-11-04, ahead of the rest of the
    ledger). Steward sessions built (0.10): done when working sessions get no PR wake-ups.
    Then triage in the Worker, so stewards get only actionable events. The view page is
@@ -188,7 +190,3 @@ Open:
    session now follow the repository graph instead, which may settle this; whether the
    project should still matter anywhere (search, naming a session by title) is open.
 4. The idle stop's minimum, 100,000 tokens, and the summary's limit, 9,500 characters.
-5. How development documents reach the index: a GitHub push webhook to the Worker, a GitHub
-   Action in each document's repository, or `focused docs push` by hand.
-6. Whether matching document sections join a session's first message, as recall's block does
-   (off until decided).

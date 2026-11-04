@@ -311,13 +311,14 @@ session reads the sections that bear on its work:
   read at, and is embedded again only when its text changes.
 - **What is indexed first** (decided by the maintainer on 2026-11-04): rapid-review-docs'
   pages, rapid-review-web's `dev/plan.md`, and this repository's README.md and ARCHITECTURE.md.
-- **Loading them:** how documents reach the index for good (a GitHub webhook to the Worker, a
-  GitHub Action in each repository, or by hand) is still open. Until it is decided, run
-  `focused docs push <files or folders>` in a checkout: it names the repository by its
+- **Loading them:** decided by the maintainer on 2026-11-04, a GitHub Action in each document's
+  repository will run `focused docs push` (with the Worker's token as a secret there); it isn't
+  added to those repositories yet. Until it is, run `focused docs push <files or folders>` in a
+  checkout: it names the repository by its
   `origin`, the commit by `HEAD`, sends the Markdown and MDX files that changed since the last
   push, and with `--prune` deletes those the paths given no longer name.
-- **Nothing joins a session's first message** yet, as recall's block does: whether it should
-  is open.
+- **Nothing joins a session's first message**, as recall's block does: the maintainer decided
+  on 2026-11-04 to keep documents on demand for now.
 
 ## Pull requests: steward sessions
 
@@ -609,6 +610,11 @@ Made on 2026-11-04 by the maintainer:
   (a fresh cloud session) on Sonnet 5.5, so PR events don't wake it and commands typed
   meanwhile, such as `/focused-answers`, don't wait behind them. Steward sessions first,
   then Worker triage; the view page is built in parallel in its own session.
+- Development documents are indexed by section: rapid-review-docs' pages, rapid-review-web's
+  `dev/plan.md`, and this repository's README.md and ARCHITECTURE.md first, read through a
+  command first. They reach the index through a GitHub Action in each document's repository
+  that runs `focused docs push`. Matching sections don't join a session's first message for
+  now.
 
 Open:
 
@@ -622,9 +628,3 @@ Open:
    the hosted index's search spans all of them. Recall and the choice of a session now go
    by repository, which may settle this: whether the project should still matter
    anywhere (search, naming a session by its title) is open.
-5. How development documents reach the index for good: (a) a GitHub push webhook to the
-   Worker, which fetches the changed files (a webhook secret and a GitHub token in the
-   Worker); (b) a GitHub Action in each document's repository running `focused docs push`
-   (the Worker's token as a secret there); (c) `focused docs push` by hand. Until then, by hand.
-6. Whether matching document sections should join a session's first message, as recall's
-   block does. Off until decided.
