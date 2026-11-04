@@ -818,9 +818,10 @@ def cmd_docs(args) -> int:
     bear on the words given, one in full (`read <id>`), or a checkout's documents sent there
     (`push <paths>`)."""
     words = list(args.words)
-    if words[:1] == ["--"]:
+    literal = words[:1] == ["--"]  # after `--` the words are a search, even if the first is read or push
+    if literal:
         words = words[1:]
-    action = words[0] if words and words[0] in ("read", "push") else None
+    action = words[0] if words and not literal and words[0] in ("read", "push") else None
     if not words or action and len(words) == 1:
         return _fail(args, "Name what to look for, as in: docs how the Worker is deployed; or: docs read <id>", 2)
     try:
@@ -838,11 +839,10 @@ def cmd_docs(args) -> int:
             return 0
         if action == "push":
             options = _docs_push_parser().parse_args(words[1:])
-            root, name, commit = docs.checkout(Path(options.paths[0]).resolve())
+            root, name, commit = docs.checkout(Path(options.paths[0]).resolve(), options.repo)
             files = docs.collect(root, options.paths)
             if not files:
                 return _fail(args, "focused: no Markdown or MDX file there.", 1)
-            name = options.repo or name
             done = docs.push(name, commit, files, prune=options.prune, force=options.force)
             print(f"{name} at {commit[:12]}: {done['files']} documents sent "
                   f"({done['unchanged_files']} unchanged, not sent), {done['gone']} deleted; "

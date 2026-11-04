@@ -59,10 +59,16 @@ def _git(root: Path, *args: str) -> str:
     return done.stdout.strip()
 
 
-def checkout(start: Path) -> tuple:
-    """(root, repository name, commit) of the git checkout holding `start`."""
+def checkout(start: Path, repo: Optional[str] = None) -> tuple:
+    """(root, repository name, commit) of the git checkout holding `start`. A `repo` given
+    names the repository in place of the checkout's origin, which may be missing."""
     root = Path(_git(start if start.is_dir() else start.parent, "rev-parse", "--show-toplevel"))
-    name = repos.name_for_url(_git(root, "config", "--get", "remote.origin.url"))
+    name = repo
+    if not name:
+        try:
+            name = repos.name_for_url(_git(root, "config", "--get", "remote.origin.url"))
+        except DocsError:  # no origin at all
+            name = None
     if not name:
         raise DocsError(f"{root} has no origin on a host focused can name; pass --repo github.com/owner/name")
     return root, name, _git(root, "rev-parse", "HEAD")
@@ -80,8 +86,11 @@ def collect(root: Path, paths: list) -> dict:
         except ValueError:
             raise DocsError(f"{given} is outside the checkout {root}") from None
         if path.is_dir():
+            # A link under the folder is followed only if it ends inside the checkout: a
+            # repository someone else controls may ship one to a file elsewhere on this machine.
             files = sorted(p for p in path.rglob("*") if p.is_file() and p.suffix.lower() in SUFFIXES
-                           and not SKIPPED.intersection(p.relative_to(root).parts))
+                           and not SKIPPED.intersection(p.relative_to(root).parts)
+                           and p.resolve().is_relative_to(root))
         elif path.is_file():
             files = [path]
         else:
@@ -127,6 +136,13 @@ def push(repo: str, commit: str, files: dict, prune: bool = False, force: bool =
     return done
 
 
+def _quote(text) -> str:
+    """`text` as a JSON string on one line: json.dumps leaves U+2028, U+2029 and U+0085, which
+    some readers take for line breaks, so they are escaped too."""
+    return (json.dumps(text, ensure_ascii=False).replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+            .replace("\x85", "\\u0085"))
+
+
 def _flat(text, limit: int) -> str:
     text = " ".join(str(text or "").split())
     return text if len(text) <= limit else text[:limit - 1] + "…"
@@ -136,8 +152,8 @@ def _where(item: dict) -> str:
     """`github.com/owner/name "path" § "Title › Heading"`: the path and heading quoted, as
     they come from the document."""
     heading = " › ".join(item.get("heading") or [])
-    return (f"{item['repo']} {json.dumps(item['path'], ensure_ascii=False)}"
-            + (f" § {json.dumps(heading, ensure_ascii=False)}" if heading else ""))
+    return (f"{item['repo']} {_quote(item['path'])}"
+            + (f" § {_quote(heading)}" if heading else ""))
 
 
 def listing(items: list, vectors: bool) -> str:
@@ -153,7 +169,7 @@ def listing(items: list, vectors: bool) -> str:
         out.append(f"\n- {item['id']} · {_where(item)}"
                    f" (by {how}{f' {similarity:.2f}' if isinstance(similarity, (int, float)) else ''};"
                    f" {chars:,} characters, at {item['commit'][:7]})")
-        out.append(f"  {json.dumps(_flat(item['start'], SHOWN), ensure_ascii=False)}")
+        out.append(f"  {_quote(_flat(item['start'], SHOWN))}")
     if not vectors:
         out.append("\n(The hosted index searched by words alone: it has no embeddings of the documents.)")
     return "\n".join(out)
@@ -172,5 +188,5 @@ def section(item: dict) -> str:
     lines = [HEAD,
              f"\nSection {item['id']} · {_where(item)}{place}, at commit {item['commit'][:12]}"
              + (f" ({'; '.join(around)})" if around else ""),
-             json.dumps(item["text"], ensure_ascii=False)]
+             _quote(item["text"])]
     return "\n".join(lines)

@@ -134,6 +134,36 @@ class PushTest(RemoteFixture):
         self.assertEqual(code, 1)
         self.assertIn("outside the checkout", err)
 
+    def test_a_link_out_of_the_checkout_is_not_followed_from_a_folder(self):
+        outside = self.dir / "secret.md"
+        outside.write_text("# secret")
+        (self.repo / "link.md").symlink_to(outside)
+        inside = self.repo / "alias.md"
+        inside.symlink_to(self.repo / "intro.mdx")
+        self.assertEqual(sorted(docs.collect(self.repo, [str(self.repo)])),
+                         ["alias.md", "intro.mdx", "reviews/findings.mdx"])
+        with self.assertRaises(docs.DocsError):
+            docs.collect(self.repo, [str(self.repo / "link.md")])
+
+    def test_repo_names_a_checkout_without_an_origin(self):
+        subprocess.run(["git", "-C", str(self.repo), "remote", "remove", "origin"], check=True)
+        code, _, err = run("docs", "push", str(self.repo))
+        self.assertEqual(code, 1)
+        self.assertIn("--repo", err)
+        code, out, err = run("docs", "push", "--repo", REPO, str(self.repo))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.worker.doc_pushes[0]["repo"], REPO)
+
+    def test_a_search_can_start_with_read_or_push_after_two_dashes(self):
+        self.worker.doc_items = [found()]
+        self.assertIn(ID, run("docs", "--", "read", "the", "docs")[1])
+
+    def test_line_separators_in_quoted_text_are_escaped(self):
+        out = docs.section({"id": ID, "repo": REPO, "path": "a.md", "heading": [], "commit": COMMIT,
+                            "text": "a\u2028b\u2029c\x85d"})
+        self.assertEqual(len(out.splitlines()), 4)  # header, blank, place, text
+        self.assertIn("a\\u2028b\\u2029c\\u0085d", out)
+
     def test_the_skill_is_installed_with_the_others(self):
         self.assertIn("docs", install.SKILLS)
         text = (ROOT / "skills" / "docs" / "SKILL.md").read_text()
