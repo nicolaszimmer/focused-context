@@ -105,16 +105,47 @@ def parse_url(url: str) -> Optional[tuple]:
     return (match.group(1), match.group(2), int(match.group(3))) if match else None
 
 
+def _pull_request_of(response) -> Optional[tuple]:
+    """(owner, repo, number) of the pull request a create_pull_request result is about. Read from
+    the result's own `html_url`/`url` field (looking through content blocks and JSON text), never
+    from a link in its body or title. Without such a field, a URL found in the text counts only
+    if it is the only pull request URL there."""
+    fields, texts = [], []
+
+    def walk(node):
+        if isinstance(node, str):
+            texts.append(node)
+            try:
+                walk(json.loads(node))
+            except ValueError:
+                pass
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+        elif isinstance(node, dict):
+            for key in ("html_url", "url"):
+                if isinstance(node.get(key), str) and parse_url(node[key]):
+                    fields.append(parse_url(node[key]))
+            for value in node.values():
+                walk(value)
+
+    walk(response)
+    if fields:
+        return fields[0] if len(set(fields)) == 1 else None
+    found = {(m.group(1), m.group(2), int(m.group(3))) for t in texts for m in PR_URL.finditer(t)}
+    return found.pop() if len(found) == 1 else None
+
+
 def from_hook(payload: dict) -> Optional[dict]:
     """The steward's arguments for the pull request a create_pull_request call just opened,
     or None: another tool, no pull request in the result, or a head branch in a fork."""
     if not isinstance(payload, dict) or payload.get("tool_name") != "mcp__github__create_pull_request":
         return None
     given = payload.get("tool_input") or {}
-    found = PR_URL.search(json.dumps(payload.get("tool_response"), ensure_ascii=False))
+    found = _pull_request_of(payload.get("tool_response"))
     if not found or not isinstance(given, dict):
         return None
-    owner, repo, number = found.group(1), found.group(2), int(found.group(3))
+    owner, repo, number = found
     if str(given.get("owner", "")).lower() != owner.lower() or str(given.get("repo", "")).lower() != repo.lower():
         return None
     try:

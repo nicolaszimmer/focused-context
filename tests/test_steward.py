@@ -71,6 +71,17 @@ class StewardTest(unittest.TestCase):
             self.assertIsNone(steward.from_hook(payload), payload)
             self.assertEqual(hook(payload), (0, ""))
 
+    def test_the_result_names_the_pull_request_not_a_link_in_its_body(self):
+        other = "https://github.com/nicolaszimmer/focused-context/pull/3"
+        body = {"url": URL, "body": f"follows {other}", "title": other}
+        payload = opened()
+        payload["tool_response"] = [{"type": "text", "text": json.dumps(body)}]
+        self.assertEqual(steward.from_hook(payload)["title"], "Steward: nicolaszimmer/focused-context#14")
+        payload["tool_response"] = {"html_url": URL, "body": other}  # a plain object
+        self.assertEqual(steward.from_hook(payload)["title"], "Steward: nicolaszimmer/focused-context#14")
+        payload["tool_response"] = f"opened {URL}, see {other}"  # no field, two links: ambiguous
+        self.assertIsNone(steward.from_hook(payload))
+
     def test_the_hook_fails_open(self):
         self.assertEqual(hook("{ not json"), (0, ""))
         self.assertEqual(hook({"tool_name": "mcp__github__create_pull_request", "tool_input": "x"}), (0, ""))
