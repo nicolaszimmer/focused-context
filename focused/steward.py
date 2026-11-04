@@ -39,7 +39,8 @@ its description, CI, open review threads and mergeability. Follow the rules the 
 gives you.
 2. Fix what is this pull request's to fix: CI it breaks, merge conflicts, and review findings \
 that are real and in its scope. Push to `{head}` only, as new commits: never force-push, \
-rebase or amend. Before every push, run the checks the repository's CLAUDE.md names.
+rebase or amend. Before every push, run the repository's own checks: those its CLAUDE.md \
+names, or else its tests, as its README or CI runs them.
 3. Answer every review thread: what you changed, or why not, with what you traced. Resolve \
 the threads you fixed. Leave open any finding you would decline, any security finding and \
 any larger ask: those are the maintainer's.

@@ -52,6 +52,7 @@ class StewardTest(unittest.TestCase):
         self.assertIn("subscribe_pr_activity for nicolaszimmer/focused-context #14", brief)
         self.assertIn("Push to `claude/feature` only", brief)
         self.assertIn("Never merge", brief)
+        self.assertIn("or else its tests", brief)  # a repository without a CLAUDE.md
         self.assertIn("Waiting on you:", brief)
         self.assertNotIn("permission_mode", arguments)  # the steward inherits this session's, never "plan"
 
