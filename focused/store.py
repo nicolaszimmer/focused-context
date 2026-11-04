@@ -411,9 +411,13 @@ def ask_jev(conn: sqlite3.Connection, session_id: str, ask: jev.Ask = jev.http_a
         done["requests"] += 1
         return ask(state, questions, deadline=deadline)
 
+    # A message with parts, or with paragraphs: one with no text of its own (an image
+    # alone) has no parts to ask about, but the ledger reads what Claude wrote to it.
     turns = [row[0] for row in conn.execute(
-        "SELECT p.turn_key FROM parts p JOIN turns t ON t.session_id = p.session_id AND t.turn_key = p.turn_key "
-        "WHERE p.session_id = ? GROUP BY p.turn_key ORDER BY MAX(t.seq) DESC", (session_id,))]
+        "SELECT t.turn_key FROM turns t WHERE t.session_id = ? AND ("
+        "EXISTS (SELECT 1 FROM parts p WHERE p.session_id = t.session_id AND p.turn_key = t.turn_key) OR "
+        "EXISTS (SELECT 1 FROM paras p WHERE p.session_id = t.session_id AND p.turn_key = t.turn_key)) "
+        "ORDER BY t.seq DESC", (session_id,))]
     for turn_key in turns:
         try:
             _ask_turn(conn, session_id, turn_key, call, done)

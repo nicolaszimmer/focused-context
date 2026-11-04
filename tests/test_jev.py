@@ -368,6 +368,15 @@ class LedgerTest(Fixture):
             self.assertLess(text.index("## Findings"), text.index("## Asked of you"))
             self.assertLess(text.index("## Asked of you"), text.index("## Messages"))
 
+    def test_what_claude_wrote_to_a_message_without_text_is_read_too(self):
+        self.write([user("u1", [{"type": "image", "source": {"data": "A" * 40}}], **HUMAN),
+                    assistant(text("I found the bug the screenshot shows."))])
+        conn = self.index()
+        done = store.ask_jev(conn, "s1", ask=FakeJev(), ledger=True)
+        self.assertEqual((done["kinds"], done["pairs"], done["marks"]), (0, 0, 1))  # no parts to ask about
+        self.assertEqual([row["text"] for row in store.ledger(conn, "s1") if row["finding"]],
+                         ["I found the bug the screenshot shows."])
+
     def test_switched_off_no_summary_shows_them_even_once_read(self):
         conn = self.index()
         store.ask_jev(conn, "s1", ask=FakeJev(), ledger=True)
