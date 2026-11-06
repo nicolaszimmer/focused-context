@@ -311,7 +311,10 @@ The opening session first lets go of the pull request: opening it may subscribe 
 to it, and a pull request's events reach one session only. A steward whose subscription
 didn't take says so at the end of its turn.
 
-`/focused:steward <PR URL> [branch]` hands over a pull request that is already open. Locally,
+`/focused:steward <PR URL> [branch]` hands over a pull request that is already open. It
+refuses a URL or branch with any character outside letters, digits and `_ . / -` (and `:`
+in the URL's scheme) before running anything, so no quote, `$` or parenthesis from a branch
+name reaches its command line. Locally,
 where sessions can't start cloud sessions, the hook does nothing. `FOCUSED_STEWARD=0`
 switches it off, and `FOCUSED_STEWARD_MODEL` picks another model. A pull request from a
 fork isn't handed over: the steward couldn't push to it.
